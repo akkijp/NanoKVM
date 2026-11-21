@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { LoadingOutlined, RocketOutlined, SmileOutlined } from '@ant-design/icons';
 import { Button, Divider, Result, Spin } from 'antd';
 import { useTranslation } from 'react-i18next';
-import semver from 'semver';
 
 import * as api from '@/api/application.ts';
 
 import { CustomServer } from './custom-server.tsx';
 import { Offline } from './offline.tsx';
 import { Preview } from './preview.tsx';
+import { isUpToDate } from '@/lib/version.ts';
 
 type UpdateProps = {
   setIsLocked: (isClosable: boolean) => void;
@@ -47,7 +47,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
         if (rsp.data?.latest) {
           setLatestVersion(rsp.data.latest);
-          const isLatest = semver.gte(rsp.data.current, rsp.data.latest);
+          const isLatest = isUpToDate(rsp.data.current, rsp.data.latest);
           setStatus(isLatest ? 'latest' : 'outdated');
         } else {
           setStatus('latest');

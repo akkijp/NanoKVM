@@ -14,7 +14,6 @@ import {
   UserRoundIcon
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import semver from 'semver';
 
 import * as api from '@/api/application.ts';
 import * as ls from '@/lib/localstorage.ts';
@@ -30,6 +29,7 @@ import { MCP } from './mcp';
 import { Network } from './network';
 import { Tailscale } from './tailscale';
 import { Update } from './update';
+import { isNewerVersion } from '@/lib/version.ts';
 
 export const Settings = () => {
   const { t } = useTranslation();
@@ -113,7 +113,7 @@ export const Settings = () => {
         return;
       }
 
-      if (semver.gt(rsp.data.latest, rsp.data.current)) {
+      if (isNewerVersion(rsp.data.latest, rsp.data.current)) {
         setIsUpdateAvailable(true);
       }
     });

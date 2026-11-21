@@ -6,7 +6,7 @@ set -euo pipefail
 TAG="${1:-}"
 EXPECTED_SHA="${2:-}"
 
-if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
     echo "[ERROR] invalid tag '$TAG', expected MAJOR.MINOR.PATCH" >&2
     exit 1
 fi

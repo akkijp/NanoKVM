@@ -1,8 +1,10 @@
 package application
 
 const (
-	StableURL  = "https://cdn.sipeed.com/nanokvm"
-	PreviewURL = "https://cdn.sipeed.com/nanokvm/preview"
+	// akkijp fork: updates come only from this fork's GitHub Releases, never from cdn.sipeed.com.
+	// The preview channel is not published by the fork, so it points at the stable channel.
+	StableURL  = "https://github.com/akkijp/NanoKVM/releases/latest/download"
+	PreviewURL = StableURL
 
 	AppDir    = "/kvmapp"
 	BackupDir = "/root/old"
