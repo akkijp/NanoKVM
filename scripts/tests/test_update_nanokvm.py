@@ -52,6 +52,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
         self.u.MIC_STATUS = str(self.base / "mic-status")
+        self.u.PICOCLAW_STATUS = str(self.base / "picoclaw-status")
         self.u.RESTART_PENDING = str(self.base / "restart-pending")
         self.u.MOUNTS = str(self.base / "mounts")
         pathlib.Path(self.u.MOUNTS).write_text("")
@@ -718,6 +719,28 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "cannot read"):
             self.run_update(file=path, sha512=digest)
+
+    def test_record_of_a_device_without_a_version_file_can_settle(self):
+        (pathlib.Path(self.u.APP_DIR) / "version").unlink()
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "", "to": "2.5.4.1", "phase": "switching"}\n')
+        self.u.daemons_run_app = lambda since: True
+        path, digest = self.package("2.5.4.1")
+        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
+
+    def test_empty_version_file_does_not_settle_a_record(self):
+        (pathlib.Path(self.u.APP_DIR) / "version").write_text("")
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "", "to": "2.5.4.1", "phase": "installed"}\n')
+        self.u.daemons_run_app = lambda since: True
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected_keeping("not been seen running", file=path, sha512=digest)
+
+    def test_record_is_not_settled_while_picoclaw_is_on(self):
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.2", "to": "2.4.3", "phase": "installed"}\n')
+        pathlib.Path(self.u.PICOCLAW_STATUS).write_text("FAILED: picoclaw could not be stopped\n")
+        self.u.daemons_run_app = lambda since: True
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected_keeping("not been seen running", file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
 
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
@@ -1526,6 +1549,19 @@ sleep() {{ :; }}
                 __import__("time").sleep(2)
                 self.assertTrue(record.exists())
         self.base = base
+
+    def test_record_is_kept_when_a_boot_step_failed(self):
+        for kw in ({"mic_fails": True}, {"picoclaw_fails": True}):
+            with self.subTest(**kw):
+                fake = self.base / "fs"
+                record = fake / "etc/kvm/update-restart-pending"
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text('{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}\n')
+                (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
+                (fake / "kvmapp/version").write_text("2.5.4.1\n")
+                self.run_s95("start", pidof_after_start=True, **kw)
+                __import__("time").sleep(2)
+                self.assertTrue(record.exists())
 
     def test_record_changed_during_the_check_is_kept(self):
         fake = self.base / "fs"

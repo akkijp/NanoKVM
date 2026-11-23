@@ -66,7 +66,7 @@ func (s *Service) GetVersion(c *gin.Context) {
 		rsp.OkRspWithData(c, &proto.GetVersionRsp{
 			ServerStarted: processStart.UnixMilli(),
 			Current:       currentVersion, RestartPending: true, RestartPhase: reportedPhase(record),
-			PendingVersion: record.To, Microphone: microphone,
+			PendingVersion: record.To, Microphone: microphone, Picoclaw: readPicoclawStatus(),
 		})
 		return
 	}
@@ -80,7 +80,7 @@ func (s *Service) GetVersion(c *gin.Context) {
 		// be visible on a KVM that has no internet access).
 		rsp.OkRspWithData(c, &proto.GetVersionRsp{
 			ServerStarted: processStart.UnixMilli(),
-			Current:       currentVersion, Microphone: microphone, LatestError: "failed to query latest version",
+			Current:       currentVersion, Microphone: microphone, Picoclaw: readPicoclawStatus(), LatestError: "failed to query latest version",
 		})
 		return
 	}
@@ -91,6 +91,7 @@ func (s *Service) GetVersion(c *gin.Context) {
 		Current:       currentVersion,
 		Latest:        latestVersion,
 		Microphone:    microphone,
+		Picoclaw:      readPicoclawStatus(),
 	})
 }
 

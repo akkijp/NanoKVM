@@ -34,6 +34,7 @@ import (
 var (
 	restartPendingPath = "/etc/kvm/update-restart-pending"
 	microphoneStatus   = "/run/nanokvm-microphone" // written by S95nanokvm
+	picoclawStatus     = "/run/nanokvm-picoclaw"   // written by S95nanokvm
 
 	// processStart tells a server started by the restart (after the record was last written)
 	// from the old one still running because the restart failed.
@@ -115,7 +116,15 @@ func reportedPhase(record pendingRecord) string {
 }
 
 func readMicrophoneStatus() string {
-	data, err := os.ReadFile(microphoneStatus)
+	return readStatusFile(microphoneStatus)
+}
+
+func readPicoclawStatus() string {
+	return readStatusFile(picoclawStatus)
+}
+
+func readStatusFile(path string) string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}

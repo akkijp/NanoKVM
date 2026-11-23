@@ -657,6 +657,7 @@ const en = {
         queryFailed: 'Get version failed',
         restartPending: 'This version is installed but the device has not restarted into it yet.',
         retryRestart: 'Retry the restart',
+        picoclawFailed: 'picoclaw (the AI agent) could not be stopped or disabled. See the system log and FORK.md.',
         unconfirmed:
           'The result could not be confirmed in time. The device may still be updating; check the version again later.',
         confirming: 'The new version has started. Checking that it keeps running...',

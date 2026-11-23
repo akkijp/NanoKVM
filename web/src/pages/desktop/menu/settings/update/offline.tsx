@@ -15,6 +15,8 @@ interface UpdateProps {
   onInstalled: (version: string) => void;
   // akkijp fork: an upload that was refused or failed; the parent shows what the device is left with.
   onFailed: (message: string) => void;
+  // akkijp fork: resolves false when the device's current version cannot be read right now.
+  ensureBaseline: () => Promise<boolean>;
 }
 
 // A definite refusal from the device (as opposed to a lost connection).
@@ -25,7 +27,15 @@ function versionOf(filename: string) {
   return filename.replace(/^nanokvm_/, '').replace(/\.tar\.gz$/, '');
 }
 
-export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled, onFailed }: UpdateProps) => {
+export const Offline = ({
+  status,
+  setStatus,
+  setIsLocked,
+  setErrMsg,
+  onInstalled,
+  onFailed,
+  ensureBaseline
+}: UpdateProps) => {
   const { t } = useTranslation();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -51,8 +61,15 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
     upload(file);
   }
 
-  function upload(file: File | null) {
+  async function upload(file: File | null) {
     if (!file) return;
+
+    // Without the current version and start time the outcome could never be confirmed.
+    if (!(await ensureBaseline())) {
+      setStatus('failed');
+      setErrMsg(t('settings.update.queryFailed'));
+      return;
+    }
 
     const checksum = sha256Checksum.trim();
     // akkijp fork: the SHA-256 from the release's sha256.txt is required.

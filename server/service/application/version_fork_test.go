@@ -908,3 +908,19 @@ func TestInstallRefusesAnEmptyVersionFile(t *testing.T) {
 		t.Fatal("the previous backup was removed")
 	}
 }
+
+func TestVersionReportsPicoclawStatus(t *testing.T) {
+	usePendingTestPaths(t)
+	old := picoclawStatus
+	picoclawStatus = filepath.Join(t.TempDir(), "picoclaw")
+	t.Cleanup(func() { picoclawStatus = old })
+	if err := os.WriteFile(picoclawStatus, []byte("FAILED: picoclaw could not be stopped or its init script disabled\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"picoclaw":"FAILED`) {
+		t.Fatalf("version: %s", body)
+	}
+}

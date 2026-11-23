@@ -108,6 +108,12 @@ disable_picoclaw() {
             picoclaw_status=1
         fi
     fi
+    # The result is in /run/nanokvm-picoclaw ("off" or "FAILED: ..."), shown by the web page.
+    if [ "$picoclaw_status" -eq 0 ]; then
+        echo "off" > /run/nanokvm-picoclaw
+    else
+        echo "FAILED: picoclaw could not be stopped or its init script disabled" > /run/nanokvm-picoclaw
+    fi
     return "$picoclaw_status"
 }
 
@@ -182,7 +188,8 @@ start_services() {
     # (another restart or update would have its own check).
     if [ -f "$PENDING" ]; then
         pending_to="$(sed -n 's/.*"to": *"\([^"]*\)".*/\1/p' "$PENDING")"
-        if pending_installed && [ -n "$pending_to" ] \
+        # A boot step that failed (microphone or picoclaw still on) keeps the update unsettled.
+        if [ "$boot_status" -eq 0 ] && pending_installed && [ -n "$pending_to" ] \
             && [ "$pending_to" = "$(tr -d ' \t\r\n' < /kvmapp/version 2>/dev/null)" ]; then
             pending_sum="$(cksum < "$PENDING")"
             (sleep 15

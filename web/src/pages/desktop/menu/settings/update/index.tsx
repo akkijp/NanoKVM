@@ -21,6 +21,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const [latestVersion, setLatestVersion] = useState('');
   const [errMsg, setErrMsg] = useState('');
   const [microphone, setMicrophone] = useState('');
+  const [picoclaw, setPicoclaw] = useState('');
   const versionRequestRef = useRef(0);
   const recheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // While watching an update or a restart, a failed request (the server restarting) is retried
@@ -69,6 +70,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
         // the restart; if it stopped half-way, only manual recovery is safe.
         setMicrophone(rsp.data.microphone || '');
+        setPicoclaw(rsp.data.picoclaw || '');
         if (rsp.data.serverStarted) serverStartedRef.current = rsp.data.serverStarted;
 
         // Watching our own update or restart retry.
@@ -82,7 +84,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             sawPending: watchSawPendingRef.current
           };
           if (watchFinished(state, rsp.data)) {
-            if (!(rsp.data.microphone || '').startsWith('FAILED')) {
+            const bootFailed =
+              (rsp.data.microphone || '').startsWith('FAILED') || (rsp.data.picoclaw || '').startsWith('FAILED');
+            if (!bootFailed) {
               window.location.reload(); // the target version runs, after a real restart, and has settled
               return;
             }
@@ -247,13 +251,31 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // akkijp fork: after an update or a restart retry the device restarts, and may reboot (a new
   // HDMI driver or init script). Watch the version API until it answers again and the update has
   // settled, then reload; never reload into a page that cannot load.
+  // Before an upload, make sure the version and server start time it will be compared against
+  // are known (the first query may have failed); without them the result could never be
+  // confirmed. Resolves to false if the device cannot be reached now.
+  function ensureBaseline(): Promise<boolean> {
+    if (serverStartedRef.current > 0 && currentVersion) return Promise.resolve(true);
+    return api
+      .getVersion()
+      .then((rsp: any) => {
+        const data = rsp?.data;
+        if (rsp?.code !== 0 || !data?.serverStarted || !data?.current) return false;
+        serverStartedRef.current = data.serverStarted;
+        setCurrentVersion(data.current);
+        watchPreviousRef.current = data.current;
+        return true;
+      })
+      .catch(() => false);
+  }
+
   function watchRestart(target: string) {
     // A reply that arrives after the tab was closed must not lock the settings again.
     if (!mountedRef.current) return;
     watchTargetRef.current = target;
     watchStartedFromRef.current = serverStartedRef.current;
     watchSawPendingRef.current = false;
-    watchPreviousRef.current = currentVersion;
+    watchPreviousRef.current = currentVersion || watchPreviousRef.current;
     setIsLocked(true);
     setStatus('updating');
     setErrMsg('');
@@ -315,12 +337,16 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             setErrMsg={setErrMsg}
             onInstalled={watchRestart}
             onFailed={showFailure}
+            ensureBaseline={ensureBaseline}
           />
           <Divider className="opacity-50" />
         </>
       )}
 
       {/* akkijp fork: a microphone that could not be disabled is shown even though the KVM runs. */}
+      {picoclaw.startsWith('FAILED') && (
+        <Alert className="mb-4" type="error" showIcon message={t('settings.update.picoclawFailed')} description={picoclaw} />
+      )}
       {microphone.startsWith('FAILED') && (
         <Alert className="mb-4" type="error" showIcon message={t('settings.update.microphoneFailed')} description={microphone} />
       )}

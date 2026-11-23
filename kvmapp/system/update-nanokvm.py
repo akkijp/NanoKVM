@@ -66,6 +66,7 @@ STAGE_MARK_NAME = ".staged-by-update-nanokvm"
 
 DAEMONS = ("NanoKVM-Server", "kvm_system")
 MIC_STATUS = "/run/nanokvm-microphone"  # written by S95nanokvm
+PICOCLAW_STATUS = "/run/nanokvm-picoclaw"  # written by S95nanokvm
 # Written before /kvmapp is switched (by this script and by the web updater) and removed once
 # the new version has been seen running (S95nanokvm, or this script). While it exists, /root/old
 # is the only version known to work. JSON {"from", "to", "phase"}; phase "switching" while
@@ -396,12 +397,16 @@ def read_version(app_dir: str) -> str:
         return ""
 
 
-def microphone_status() -> str:
+def status_of(path: str) -> str:
     try:
-        with open(MIC_STATUS) as f:
+        with open(path) as f:
             return f.read().strip()
     except OSError:
         return ""
+
+
+def microphone_status() -> str:
+    return status_of(MIC_STATUS)
 
 
 def restart_previous(script: str) -> str:
@@ -491,7 +496,13 @@ def check_not_interrupted() -> None:
         # Settled when the daemons running are the ones in /kvmapp (not old processes left by a
         # failed restart) and /kvmapp is one of the two versions. In the "switching" phase,
         # also nothing may have been moved to /root/old yet (the web updater moves file by file).
-        settled = (whole and current and current in (record.get("from"), record.get("to"))
+        # "" is a version only when the file is really missing (a very old device); an empty or
+        # unreadable file never matches.
+        version_missing = not os.path.lexists(os.path.join(APP_DIR, "version"))
+        known = bool(current) or version_missing
+        boot_ok = not any(status_of(path).startswith("FAILED") for path in (MIC_STATUS, PICOCLAW_STATUS))
+        settled = (whole and known and current in (record.get("from"), record.get("to"))
+                   and boot_ok
                    and daemons_run_app(record["_mtime"])
                    and (record.get("phase") == "installed" or only_dirs(BACKUP_DIR)))
         if settled:

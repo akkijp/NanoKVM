@@ -10,6 +10,8 @@ type GetVersionRsp struct {
 	// akkijp fork: /run/nanokvm-microphone ("off", "on", or "FAILED: ..."), so a microphone that
 	// could not be disabled during an update is shown even though the KVM itself runs.
 	Microphone string `json:"microphone,omitempty"`
+	// akkijp fork: /run/nanokvm-picoclaw ("off" or "FAILED: ...").
+	Picoclaw string `json:"picoclaw,omitempty"`
 	// akkijp fork: set when the latest version could not be fetched (the rest is still valid).
 	LatestError string `json:"latestError,omitempty"`
 	// akkijp fork: when this server process started (ms since the epoch). A page watching an
