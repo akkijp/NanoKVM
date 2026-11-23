@@ -423,10 +423,34 @@ class UpdateScriptTest(unittest.TestCase):
         self.complete_app(self.u.BACKUP_DIR)  # the version known to work
         pathlib.Path(self.u.RESTART_PENDING).write_text("")
         path, digest = self.package("2.5.4.1")
-        with self.assertRaisesRegex(self.u.UpdateError, "has not restarted into it"):
+        with self.assertRaisesRegex(self.u.UpdateError, "not been seen running"):
             self.run_update(file=path, sha512=digest)
         self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.2")
         self.assertEqual(self.calls(), "")
+
+    def test_failed_start_keeps_the_record_and_blocks_a_second_run(self):
+        self.u.started = lambda: False
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "did not start"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
+        # Running the same command again must keep /root/old (the version that worked).
+        with self.assertRaisesRegex(self.u.UpdateError, "not been seen running"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.3")
+
+    def test_success_clears_the_record(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
+
+    def test_record_is_written_before_the_switch(self):
+        seen = []
+        real_switch = self.u.switch
+        self.u.switch = lambda: (seen.append(os.path.exists(self.u.RESTART_PENDING)), real_switch())
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertEqual(seen, [True])
 
     def test_running_kvm_with_failed_init_script_is_not_called_a_failed_start(self):
         path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
@@ -874,7 +898,7 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text(), "")
         self.assertEqual(status, "on")
 
-    def run_s95(self, action, mic_fails=False, picoclaw_fails=False):
+    def run_s95(self, action, mic_fails=False, picoclaw_fails=False, pidof_after_start=False):
         """Run the real S95nanokvm branch with everything that touches the device stubbed out,
         recording the order of the fork's boot steps and the daemon starts."""
         log = self.base / "order.log"
@@ -882,7 +906,7 @@ class MicrophoneTest(unittest.TestCase):
         text = text.replace("exec 9>/run/nanokvm-service.lock || exit 1", "exec 9>/dev/null")
         text = text.replace("flock -n 9 ||", "true ||")
         text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", "record daemon-kvm_system")
-        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", "record daemon-NanoKVM-Server")
+        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", "record daemon-NanoKVM-Server; : > " + str(self.base / "started"))
         # Every write the script makes goes under the temp dir, never to the host.
         fake = self.base / "fs"
         for prefix in ("/boot/", "/root/", "/device_key", "/mnt/", "/kvmapp", "/sys/", "/etc/", "/run/"):
@@ -893,15 +917,16 @@ class MicrophoneTest(unittest.TestCase):
 record() {{ echo "$1" >> {log}; }}
 disable_audio_capture() {{ record mic; return {1 if mic_fails else 0}; }}
 disable_picoclaw() {{ record picoclaw; return {1 if picoclaw_fails else 0}; }}
-pidof() {{ return 1; }}
+pidof() {{ [ -f {self.base}/started ] && return {0 if pidof_after_start else 1}; return 1; }}
 killall() {{ :; }}
 iptables() {{ return 0; }}
-rm() {{ :; }}
+rm() {{ case "$*" in *update-restart-pending*) command rm "$@" ;; esac; }}
 cp() {{ :; }}
 mv() {{ :; }}
 awk() {{ :; }}
 sync() {{ :; }}
 reboot() {{ record reboot; }}
+sleep() {{ :; }}
 """
         head, case = text.split('case "$1" in', 1)
         script = head + stubs + 'case "$1" in' + case
@@ -922,6 +947,20 @@ reboot() {{ record reboot; }}
                 first_daemon = min(order.index("daemon-kvm_system"), order.index("daemon-NanoKVM-Server"))
                 self.assertLess(order.index("mic"), first_daemon)
                 self.assertLess(order.index("picoclaw"), first_daemon)
+
+    def test_record_is_cleared_only_when_both_daemons_stay_up(self):
+        for daemons_up, cleared in ((True, True), (False, False)):
+            with self.subTest(daemons_up=daemons_up):
+                fake = self.base / "fs"
+                record = fake / "etc/kvm/update-restart-pending"
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text("")
+                self.run_s95("start", pidof_after_start=daemons_up)
+                for _ in range(100):  # the check runs in the background
+                    if record.exists() != cleared:
+                        break
+                    __import__("time").sleep(0.05)
+                self.assertEqual(record.exists(), not cleared)
 
     def test_picoclaw_failure_fails_the_start(self):
         for action in ("start", "restart"):

@@ -66,8 +66,10 @@ STAGE_MARK_NAME = ".staged-by-update-nanokvm"
 
 DAEMONS = ("NanoKVM-Server", "kvm_system")
 MIC_STATUS = "/run/nanokvm-microphone"  # written by S95nanokvm
-# Written by the web updater when it installed a version but could not restart into it.
-RESTART_PENDING = "/run/nanokvm-restart-pending"
+# Written before /kvmapp is switched (by this script and by the web updater) and removed by
+# S95nanokvm once the new version's daemons have stayed up. While it exists, /root/old is the
+# only version known to work.
+RESTART_PENDING = "/etc/kvm/update-restart-pending"
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
 START_STABLE = 15
@@ -467,8 +469,8 @@ def check_not_interrupted() -> None:
     so this is checked before stopping and again after.)"""
     if os.path.exists(RESTART_PENDING):
         raise UpdateError(
-            f"a web update installed {read_version(APP_DIR) or 'a version'} but has not restarted into it; "
-            f"{BACKUP_DIR} is the version known to work. Nothing was changed. Restart first "
+            f"{read_version(APP_DIR) or 'a version'} was installed but has not been seen running yet; "
+            f"{BACKUP_DIR} is the version known to work. Nothing was changed. Start it first "
             "(/kvmapp/system/init.d/S95nanokvm restart, or retry from the web page), then update"
         )
     missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
@@ -524,6 +526,17 @@ def remove_stage_mark() -> None:
 
 def drop_stage() -> None:
     shutil.rmtree(STAGE_DIR, ignore_errors=True)
+
+
+def set_restart_pending() -> None:
+    """Record, durably, that /kvmapp is about to hold a version not yet seen running."""
+    os.makedirs(os.path.dirname(RESTART_PENDING), exist_ok=True)
+    fd = os.open(RESTART_PENDING, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, b"restart pending\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def switch() -> None:
@@ -607,8 +620,15 @@ def switch_and_start(version: str, reboots: bool) -> None:
         raise
 
     try:
+        set_restart_pending()
+    except OSError as e:
+        drop_stage()
+        outcome = restart_previous(STOP_SCRIPT)
+        raise UpdateError(f"could not record the pending restart ({e}); nothing was installed, and {outcome}")
+    try:
         switch()
     except Exception as e:
+        os.remove(RESTART_PENDING)  # the previous version is back in place
         drop_stage()
         outcome = restart_previous(app_script())
         if outcome.endswith("either"):
@@ -654,6 +674,9 @@ def switch_and_start(version: str, reboots: bool) -> None:
                 f"{version} is installed and running, but its init script reported a failure "
                 "(for example picoclaw could not be stopped or disabled; see the system log)"
             )
+        # Seen running: S95nanokvm clears the record after its own check; do not wait for it.
+        if os.path.exists(RESTART_PENDING):
+            os.remove(RESTART_PENDING)
     say(f"Previous version kept in {BACKUP_DIR}")
 
 

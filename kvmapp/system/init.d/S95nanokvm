@@ -147,8 +147,12 @@ start_services() {
     # Daemons must not inherit the service-operation lock.
     /tmp/kvm_system/kvm_system 9>&- &
     /tmp/server/NanoKVM-Server 9>&- &
-    # akkijp fork: an update that waited for this restart is now running.
-    rm -f /run/nanokvm-restart-pending
+    # akkijp fork: an update waiting for this restart counts as running only once both daemons
+    # have stayed up; until then /root/old must not be replaced (see update.go).
+    if [ -f /etc/kvm/update-restart-pending ]; then
+        (sleep 15; pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1 \
+            && rm -f /etc/kvm/update-restart-pending) 9>&- >/dev/null 2>&1 &
+    fi
     return "$boot_status"
 }
 

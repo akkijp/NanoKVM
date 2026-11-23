@@ -27,7 +27,7 @@ func (s *Service) OfflineUpdate(c *gin.Context) {
 		rsp.ErrRsp(c, -1, "update already in progress")
 		return
 	}
-	if retryPendingRestart(c) {
+	if retryPendingRestart(c, true) {
 		return
 	}
 

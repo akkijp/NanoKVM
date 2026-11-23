@@ -53,11 +53,19 @@ func releaseUpdateLock() {
 }
 
 func installPreparedPackage(sourceDir string) error {
-	if err := backupCurrentApp(); err != nil {
+	// akkijp fork: from here until the new version is seen running, /root/old is the version
+	// known to work. Record that before touching anything; no record, no switch.
+	if err := setRestartPending(true); err != nil {
 		return err
+	}
+	if err := backupCurrentApp(); err != nil {
+		return err // the old app may be partly moved: keep the record
 	}
 
 	if err := applyUpdate(sourceDir); err != nil {
+		if _, statErr := os.Stat(AppDir + "/version"); statErr == nil {
+			_ = setRestartPending(false) // the backup was put back; the old version is in place
+		}
 		return err
 	}
 

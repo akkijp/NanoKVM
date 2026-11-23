@@ -157,10 +157,15 @@ func TestPreviewCannotBeEnabledAndReportsEffectiveValue(t *testing.T) {
 }
 
 func TestFailedRestartReleasesUpdateLock(t *testing.T) {
-	oldPath, oldCmd := updateLockPath, restartCommand
-	updateLockPath = filepath.Join(t.TempDir(), "update.lock")
+	oldPath, oldCmd, oldPending, oldDelay := updateLockPath, restartCommand, restartPendingPath, restartDelay
+	dir := t.TempDir()
+	updateLockPath = filepath.Join(dir, "update.lock")
+	restartPendingPath = filepath.Join(dir, "restart-pending")
 	restartCommand = []string{"false"}
-	defer func() { updateLockPath, restartCommand = oldPath, oldCmd }()
+	restartDelay = 0
+	t.Cleanup(func() {
+		updateLockPath, restartCommand, restartPendingPath, restartDelay = oldPath, oldCmd, oldPending, oldDelay
+	})
 
 	if !acquireUpdateLock() {
 		t.Fatal("could not take the update lock")
@@ -190,15 +195,16 @@ func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
 		updateLockPath, restartCommand, restartDelay, restartPendingPath = oldPath, oldCmd, oldDelay, oldPending
 	})
 
+	// An update switched /kvmapp (recorded first), then the restart failed.
+	if err := setRestartPending(true); err != nil {
+		t.Fatal(err)
+	}
 	if !acquireUpdateLock() {
 		t.Fatal("could not take the update lock")
 	}
-	restartServices() // fails: the old process keeps running
+	restartServices()
 	if !isRestartPending() {
-		t.Fatal("a failed restart must be remembered")
-	}
-	if _, err := os.Stat(restartPendingPath); err != nil {
-		t.Fatal("the pending restart must be visible to the maintenance updater")
+		t.Fatal("a failed restart must leave the record in place")
 	}
 
 	// The version query tells the UI.
@@ -210,24 +216,50 @@ func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
 		t.Fatalf("version during a pending restart: %s", w.Body.String())
 	}
 
-	// A new update request retries the restart and installs nothing.
+	// An online update request retries the restart, installs nothing, and reports success.
 	marker := filepath.Join(dir, "restarted")
 	restartCommand = []string{"sh", "-c", "touch " + marker + "; exit 1"} // still failing, so the lock is released
 	w = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", nil)
 	(&Service{}).Update(c)
-	if !strings.Contains(w.Body.String(), "not running yet") {
+	if !strings.Contains(w.Body.String(), `"code":0`) || !strings.Contains(w.Body.String(), "restartRetry") {
 		t.Fatalf("update during a pending restart: %s", w.Body.String())
 	}
+	waitFor(t, func() bool {
+		_, err := os.Stat(marker)
+		return err == nil && acquireUpdateLock()
+	})
+
+	// An offline update says the uploaded file was not applied.
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update/offline", nil)
+	releaseUpdateLock()
+	(&Service{}).OfflineUpdate(c)
+	if !strings.Contains(w.Body.String(), "was not applied") {
+		t.Fatalf("offline update during a pending restart: %s", w.Body.String())
+	}
+	waitFor(t, acquireUpdateLock)
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(marker); err == nil && acquireUpdateLock() {
-			break // the retry ran and, having failed, released the lock
-		}
+	for !ok() {
 		if time.Now().After(deadline) {
-			t.Fatal("the restart was not retried")
+			t.Fatal("timed out")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
+	dir := t.TempDir()
+	oldPending := restartPendingPath
+	restartPendingPath = filepath.Join(dir, "missing-dir", "restart-pending") // cannot be written
+	t.Cleanup(func() { restartPendingPath = oldPending })
+	if err := installPreparedPackage(filepath.Join(dir, "unused")); err == nil || !strings.Contains(err.Error(), "record the pending restart") {
+		t.Fatalf("install without a record must not start: %v", err)
 	}
 }
