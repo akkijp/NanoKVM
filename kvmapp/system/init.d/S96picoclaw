@@ -222,9 +222,13 @@ stop_service() {
   rm -f "$PICOCLAW_PID_FILE"
 }
 
+# akkijp fork: the AI agent runtime is disabled. Only stop works, so a gateway
+# left by an earlier build can still be shut down.
 case "$1" in
-  start)
-    start_service
+  start|restart|onboard)
+    echo "picoclaw is disabled in this build (akkijp fork)" >&2
+    stop_service >/dev/null 2>&1
+    exit 1
     ;;
 
   stop)
@@ -232,18 +236,8 @@ case "$1" in
     echo "OK"
     ;;
 
-  onboard)
-    onboard_service
-    ;;
-
-  restart)
-    stop_service
-    start_service
-    echo "OK"
-    ;;
-
   *)
-    echo "Usage: $0 {start|stop|onboard|restart}"
+    echo "Usage: $0 stop"
     exit 1
     ;;
 esac

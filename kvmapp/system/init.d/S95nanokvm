@@ -176,12 +176,6 @@ case "$1" in
 
     # Start services
     start_services || exit 1
-
-    # akkijp fork: an update whose first start rebooted the device is checked
-    # now, and rolled back if the new version does not come up.
-    if [ -f /etc/kvm/update-pending ] && [ -f /etc/kvm/update-nanokvm.py ]; then
-        python3 /etc/kvm/update-nanokvm.py --confirm-boot > /tmp/update-confirm.log 2>&1 9>&- &
-    fi
    ;;
 
   stop)

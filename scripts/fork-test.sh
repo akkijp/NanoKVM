@@ -10,9 +10,7 @@
 # Usage: scripts/fork-test.sh   (needs docker; run on nkbuild)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-GO_IMAGE="golang:1.25.0"
-PY_IMAGE="python:3.12-slim"
-NODE_IMAGE="node:22-bookworm"
+. "$ROOT/scripts/fork-env.sh"
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Go"

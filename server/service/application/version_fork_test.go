@@ -23,18 +23,27 @@ func TestValidateLatestAcceptsFourPartVersion(t *testing.T) {
 }
 
 func TestValidateLatestRejectsMalformedVersions(t *testing.T) {
+	// Name and version stay consistent so that each case fails on the format check itself,
+	// not on the later name/version comparison.
 	for _, v := range []string{"2.5.4.1.2", "2.5", "2.5.4.", "2.5.4.x", "../2.5.4"} {
 		latest := validLatest()
-		latest.Version = v
-		if err := validateLatest(&latest); err == nil {
-			t.Errorf("version %q must be rejected", v)
+		latest.Version, latest.Name = v, "nanokvm_"+v+".tar.gz"
+		if err := validateLatest(&latest); err == nil || err.Error() != "invalid latest version" {
+			t.Errorf("version %q: got %v, want invalid latest version", v, err)
 		}
 	}
-	for _, n := range []string{"nanokvm_2.5.4.1.2.tar.gz", "nanokvm_2.5.4.x.tar.gz", "nanokvm_2.5.4.1.zip"} {
+	for _, v := range []string{"2.5.4.1-rc1", "2.5.4+build"} {
 		latest := validLatest()
-		latest.Name = n
-		if err := validateLatest(&latest); err == nil {
-			t.Errorf("package name %q must be rejected", n)
+		latest.Version, latest.Name = v, "nanokvm_"+v+".tar.gz"
+		if err := validateLatest(&latest); err == nil || err.Error() != "invalid update package name" {
+			t.Errorf("name for %q: got %v, want invalid update package name", v, err)
+		}
+	}
+	for _, n := range []string{"nanokvm_2.5.4.1.zip", "other_2.5.4.1.tar.gz"} {
+		latest := validLatest()
+		latest.Version, latest.Name = "2.5.4.1", n
+		if err := validateLatest(&latest); err == nil || err.Error() != "invalid update package name" {
+			t.Errorf("name %q: got %v, want invalid update package name", n, err)
 		}
 	}
 }
