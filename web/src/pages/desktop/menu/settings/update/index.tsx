@@ -82,19 +82,20 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             sawPending: watchSawPendingRef.current
           };
           if (watchFinished(state, rsp.data)) {
-            if ((rsp.data.microphone || '').startsWith('FAILED')) {
-              // Updated, but the microphone stayed on: keep the page, with the warning, unlocked.
-              watchUntilRef.current = 0;
-              reloadWhenSettledRef.current = false;
-              setIsLocked(false);
-              setStatus('latest');
-              setErrMsg('');
+            if (!(rsp.data.microphone || '').startsWith('FAILED')) {
+              window.location.reload(); // the target version runs, after a real restart, and has settled
               return;
             }
-            window.location.reload(); // the target version runs, after a real restart, and has settled
-            return;
+            // Updated, but the microphone stayed on: stop watching and keep the page (the warning
+            // is shown above); the version and update button below come from the normal checks.
+            watchUntilRef.current = 0;
+            reloadWhenSettledRef.current = false;
+            setIsLocked(false);
+            setErrMsg('');
           }
-          if (pending && (rsp.data.restartPhase === 'switching' || rsp.data.restartPhase === 'installed')) {
+          if (!reloadWhenSettledRef.current) {
+            // finished above (microphone warning): fall through to the normal display
+          } else if (pending && (rsp.data.restartPhase === 'switching' || rsp.data.restartPhase === 'installed')) {
             // Stopped half-way (manual recovery) or the restart failed (retry): stop watching and
             // fall through to show it, with the settings unlocked.
             reloadWhenSettledRef.current = false;
@@ -232,8 +233,14 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         }
         watchRestart(latestVersion); // the pending version
       })
-      .catch((error: unknown) => {
-        refused(error instanceof Error ? error.message : t('settings.update.updateFailed'));
+      .catch((error: any) => {
+        const code = error?.response?.status;
+        if (code && ![502, 503, 504].includes(code)) {
+          refused(`${t('settings.update.updateFailed')} (HTTP ${code})`); // refused outright
+          return;
+        }
+        // No answer, or a gateway error: the retry may have been accepted. Find out by watching.
+        watchRestart(latestVersion);
       });
   }
 

@@ -879,3 +879,32 @@ func TestVersionReportsWhenThisServerStarted(t *testing.T) {
 		t.Fatalf("version: %s", body)
 	}
 }
+
+func TestInstallRefusesAnEmptyVersionFile(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash := restartPendingPath, installAppDir, installBackupDir, installTrashDir
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
+	})
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"):           "  \n",
+		filepath.Join(installBackupDir, "server", "keep"): "x",
+		filepath.Join(dir, "new", "version"):              "2.5.4.2\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installBackupDir, "server", "keep")); err != nil {
+		t.Fatal("the previous backup was removed")
+	}
+}

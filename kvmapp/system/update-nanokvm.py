@@ -727,18 +727,33 @@ def remove_previous_backup() -> None:
         shutil.rmtree(trash)
 
 
+class SwitchError(Exception):
+    """The switch failed; `restored` says whether the previous app is in APP_DIR again."""
+
+    def __init__(self, cause: Exception, restored: bool):
+        super().__init__(str(cause))
+        self.restored = restored
+
+
 def switch() -> None:
-    """Move the old app to BACKUP_DIR and the staged one to APP_DIR. If any step fails,
-    the old app is put back in APP_DIR before the error is raised."""
+    """Move the old app to BACKUP_DIR and the staged one to APP_DIR. If a step fails, the old
+    app is put back in APP_DIR; SwitchError.restored tells whether that worked (it cannot be
+    read off the version file, which very old devices do not have)."""
     moved_old = False
     try:
         os.rename(APP_DIR, BACKUP_DIR)
         moved_old = True
         os.rename(STAGE_DIR, APP_DIR)
-    except Exception:
-        if moved_old and not os.path.exists(APP_DIR):
+    except Exception as e:
+        if not moved_old:
+            raise SwitchError(e, restored=True) from e  # nothing was moved
+        if os.path.lexists(APP_DIR):
+            raise SwitchError(e, restored=False) from e  # something unexpected is in the way
+        try:
             os.rename(BACKUP_DIR, APP_DIR)
-        raise
+        except OSError:
+            raise SwitchError(e, restored=False) from e
+        raise SwitchError(e, restored=True) from e
 
 
 MOUNTS = "/proc/mounts"
@@ -860,8 +875,8 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
         raise UpdateError(f"could not record the pending restart ({e}); nothing was installed, and {outcome}.{note}")
     try:
         switch()
-    except Exception as e:
-        if read_version(APP_DIR) != previous:
+    except SwitchError as e:
+        if not e.restored:
             # Neither the new version nor the previous one is in place (e.g. write errors on the
             # card while putting it back). Keep everything: the record (whose "from" names the
             # version in /root/old), the stage and the backup, for the manual recovery.

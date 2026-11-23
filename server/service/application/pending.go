@@ -216,7 +216,12 @@ func readVersionFileStrict(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	version := strings.TrimSpace(string(data))
+	if version == "" {
+		// Exists but says nothing: not the same as a device without the file.
+		return "", fmt.Errorf("%s/version is empty", dir)
+	}
+	return version, nil
 }
 
 func readVersionFile(dir string) string {

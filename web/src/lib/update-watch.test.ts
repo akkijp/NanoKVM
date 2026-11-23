@@ -13,11 +13,13 @@ test('reinstalling the running version is not finished until a restart is seen',
   // Same version, upload answered 502 before reaching the device: the old server still answers.
   const state = { target: '2.5.4.2', previous: '2.5.4.2', startedFrom: 100, sawPending: false };
   assert.equal(watchFinished(state, { current: '2.5.4.2', serverStarted: 100 }), false);
-  // Once the server has restarted (or a pending record was seen), it is.
+  // Once the server has restarted, it is.
   assert.equal(watchFinished(state, { current: '2.5.4.2', serverStarted: 300 }), true);
+  // A record seen on the way is not proof: a failed install that put the old version back clears
+  // it too, and the old server never restarted.
   assert.equal(
     watchFinished({ ...state, sawPending: true }, { current: '2.5.4.2', serverStarted: 100 }),
-    true
+    false
   );
 });
 

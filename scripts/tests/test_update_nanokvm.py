@@ -810,6 +810,23 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_rejected("could not remove the previous backup", file=path, sha512=digest)
         self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
 
+    def test_failed_switch_and_failed_restore_without_a_version_file(self):
+        (pathlib.Path(self.u.APP_DIR) / "version").unlink()  # a very old device
+        real_rename = os.rename
+
+        def rename(src, dst):
+            if src == self.u.STAGE_DIR or src == self.u.BACKUP_DIR:
+                raise OSError("I/O error")
+            real_rename(src, dst)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.rename, self.u.os.path = rename, os.path
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "could not be put back either"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
+        self.assertTrue(os.path.isdir(self.u.STAGE_DIR))
+
     def test_failed_switch_and_failed_restore_keeps_everything(self):
         real_rename = os.rename
 

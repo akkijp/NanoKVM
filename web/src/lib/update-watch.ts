@@ -15,14 +15,17 @@ export type VersionReply = {
 };
 
 // Finished when the target version runs, nothing is pending, and there is proof that the update
-// really did something: the version changed, a pending record was seen on the way, or the server
-// start time changed (only when both times are known). Without that proof a reinstall of the
-// running version would look finished before it even started.
+// really happened:
+//   - a different version: the version changed from the one running before;
+//   - the running version again (a reinstall): the server start time changed, with both times
+//     known. A pending record seen on the way is not enough: a failed install that put the old
+//     version back also clears it, without any restart.
 export function watchFinished(state: WatchState, reply: VersionReply): boolean {
   if (reply.restartPending) return false;
   if (state.target && reply.current !== state.target) return false;
-  const versionChanged = !!state.previous && reply.current !== state.previous;
   const serverRestarted =
     state.startedFrom > 0 && !!reply.serverStarted && reply.serverStarted !== state.startedFrom;
-  return versionChanged || state.sawPending || serverRestarted;
+  const sameVersion = !state.previous || !state.target || state.target === state.previous;
+  if (sameVersion) return serverRestarted;
+  return reply.current !== state.previous;
 }
