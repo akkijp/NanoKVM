@@ -21,6 +21,9 @@ int main()
 		{"{\"from\":\"2.5.4\",\"to\":\"2.5.4.1\",\"phase\":\"installed\"}\n\n", false},      // extra newline
 		{"{\"to\":\"2.5.4.1\",\"from\":\"2.5.4\",\"phase\":\"installed\"}", false},          // other shape
 		{"{\"from\":\"a\\\"b\",\"to\":\"2.5.4.1\",\"phase\":\"installed\"}", false},         // escapes
+		{"{\"from\":\"\\q\",\"to\":\"2.5.4.1\",\"phase\":\"installed\"}\n", false},          // an invalid escape
+		{"{\"from\":\"2.5.4 x\",\"to\":\"2.5.4.1\",\"phase\":\"installed\"}\n", false},       // not a version
+		{"{\"from\":\"2.5.0-rc1+b.7\",\"to\":\"2.5.4.1\",\"phase\":\"installed\"}\n", true}, // suffixes
 		{"", false},
 	};
 	int failures = 0;

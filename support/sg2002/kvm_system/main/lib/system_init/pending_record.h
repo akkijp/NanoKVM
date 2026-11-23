@@ -10,8 +10,8 @@ namespace pending_record {
 
 // Exactly one complete record that says the update is installed:
 //   {"from":"<text>","to":"<non-empty text>","phase":"installed"}
-// with at most spaces after ':' and ',', and one optional trailing newline. Strings must not
-// contain quotes or backslashes (versions never do). Anything else, including a record that is
+// with at most spaces after ':' and ',', and one optional trailing newline. The strings may only
+// hold version characters (digits, letters, '.', '+', '-'). Anything else, including a record that is
 // valid JSON but in another shape, counts as not installed.
 inline bool installed(const char *text, size_t length)
 {
@@ -27,7 +27,12 @@ inline bool installed(const char *text, size_t length)
 		if(i >= length || text[i] != '"') return false;
 		size_t start = ++i;
 		while(i < length && text[i] != '"') {
-			if(text[i] == '\\' || text[i] == '\n' || text[i] == '\0') return false;
+			// Only what a version can contain (digits, letters, '.', '+', '-'): the same rule as
+			// S95nanokvm, pending.go and update-nanokvm.py, so they all read a record alike.
+			char c = text[i];
+			bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			          c == '.' || c == '+' || c == '-';
+			if(!ok) return false;
 			i++;
 		}
 		if(i >= length) return false;

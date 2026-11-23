@@ -45,6 +45,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.BACKUP_DIR = str(self.base / "root/old")
         self.u.WORK_PARENT = str(self.base / "root/.kvm-update")
         self.u.LOCK_FILE = str(self.base / "update.lock")
+        self.u.SERVICE_LOCK = str(self.base / "service.lock")
         etc = self.base / "etc"
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
         write_script(pathlib.Path(self.u.STOP_SCRIPT),
@@ -764,6 +765,55 @@ class UpdateScriptTest(unittest.TestCase):
             with self.subTest(content=content):
                 pathlib.Path(self.u.RESTART_PENDING).write_text(content)
                 self.assertEqual(self.u.read_pending()["phase"], phase)
+
+    def test_switch_waits_for_the_service_lock(self):
+        import fcntl
+        held = open(self.u.SERVICE_LOCK, "w")
+        fcntl.flock(held, fcntl.LOCK_EX)
+        seen = []
+        real_set = self.u.set_restart_pending
+
+        def set_pending(phase, a, b):
+            seen.append(phase)
+            real_set(phase, a, b)
+
+        self.u.set_restart_pending = set_pending
+        sleeps = {"n": 0}
+
+        def sleep(seconds):
+            sleeps["n"] += 1
+            if sleeps["n"] == 3:
+                held.close()  # S95's operation ends
+
+        self.u.time = types.SimpleNamespace(sleep=sleep, monotonic=__import__("time").monotonic)
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertGreaterEqual(sleeps["n"], 3)  # waited before recording "switching"
+        self.assertEqual(seen[0], "switching")
+
+    def test_record_with_non_version_text_is_not_installed(self):
+        for content in ('{"from": "\\q", "to": "2.5.4.1", "phase": "installed"}\n',
+                        '{"from": "2.5.4 x", "to": "2.5.4.1", "phase": "installed"}\n'):
+            with self.subTest(content=content):
+                pathlib.Path(self.u.RESTART_PENDING).write_text(content)
+                self.assertEqual(self.u.read_pending()["phase"], "switching")
+
+    def test_s95_record_rule_matches_the_others(self):
+        body = s95_function("pending_installed")
+        cases = {
+            '{"from":"2.5.4","to":"2.5.4.1","phase":"installed"}': True,
+            '{"from": "", "to": "2.5.4.1", "phase": "installed"}': True,
+            '{"from":"\\q","to":"2.5.4.1","phase":"installed"}': False,
+            '{"from":"2.5.4 x","to":"2.5.4.1","phase":"installed"}': False,
+            '{"phase":"installed"}': False,
+        }
+        for content, installed in cases.items():
+            with self.subTest(content=content):
+                record = self.base / "pending"
+                record.write_text(content + "\n")
+                script = f"PENDING={record}\n" + body + "\npending_installed\n"
+                result = subprocess.run(["sh", "-c", script], capture_output=True)
+                self.assertEqual(result.returncode == 0, installed)
 
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"

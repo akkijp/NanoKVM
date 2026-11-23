@@ -17,6 +17,8 @@ interface UpdateProps {
   onFailed: (message: string) => void;
   // akkijp fork: resolves false when the device's current version cannot be read right now.
   ensureBaseline: () => Promise<boolean>;
+  // akkijp fork: called right before the upload is sent (the parent stores the watch).
+  onSending: (version: string) => void;
 }
 
 // A definite refusal from the device (as opposed to a lost connection).
@@ -34,7 +36,8 @@ export const Offline = ({
   setErrMsg,
   onInstalled,
   onFailed,
-  ensureBaseline
+  ensureBaseline,
+  onSending
 }: UpdateProps) => {
   const { t } = useTranslation();
 
@@ -111,6 +114,7 @@ export const Offline = ({
     const formData = new FormData();
     formData.append('file', file);
 
+    onSending(versionOf(file.name));
     api
       .offlineUpdate(formData, checksum)
       .then(async (rsp: Response) => {

@@ -160,7 +160,7 @@ func readPending() (pendingRecord, bool) {
 }
 
 // The same rule as pending_installed in S95nanokvm and pending_record.h in kvm_system.
-var installedRecordPattern = regexp.MustCompile(`^\{ *"from": *"[^"\\\n]*", *"to": *"[^"\\\n]+", *"phase": *"installed" *\}$`)
+var installedRecordPattern = regexp.MustCompile(`^\{ *"from": *"[0-9A-Za-z.+-]*", *"to": *"[0-9A-Za-z.+-]+", *"phase": *"installed" *\}$`)
 
 func isRestartPending() bool {
 	_, pending := readPending()

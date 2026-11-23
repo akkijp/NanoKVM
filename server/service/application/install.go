@@ -1,11 +1,14 @@
 package application
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"NanoKVM-Server/utils"
 	log "github.com/sirupsen/logrus"
@@ -89,6 +92,14 @@ func installPreparedPackage(sourceDir string) error {
 	if err := removePreviousBackup(); err != nil {
 		return fmt.Errorf("failed to remove backup: %w", err)
 	}
+	// From "switching" until "installed", hold S95nanokvm's service lock: a restart started
+	// elsewhere (e.g. a TLS change) must neither stop this server half-way nor start from a
+	// half-switched /kvmapp. The restart this update asks for comes after the lock is released.
+	releaseService, err := lockServiceOperations()
+	if err != nil {
+		return err
+	}
+	defer releaseService()
 	if err := writePending(record); err != nil {
 		// Nothing was moved. A record that became visible before the failure would stop the next
 		// boot: take it back.
@@ -172,6 +183,58 @@ var syncFilesystems = func() error {
 	return nil
 }
 
+// serviceLockPath is the lock S95nanokvm takes for every service operation (start/stop/restart).
+var serviceLockPath = "/run/nanokvm-service.lock"
+
+// lockServiceOperations waits up to 30 s for S95nanokvm's lock and returns its release.
+func lockServiceOperations() (func(), error) {
+	file, err := os.OpenFile(serviceLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the service lock: %w", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return func() { _ = file.Close() }, nil
+		}
+		if time.Now().After(deadline) {
+			_ = file.Close()
+			return nil, errors.New("a service operation (start/stop/restart) is running; nothing was changed")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// runtimeTemp reports files the running app creates and renames on its own (the video library's
+// state file, kvm/.state.tmp.*): they may vanish while /kvmapp is being moved and are not part of
+// any version.
+func runtimeTemp(rel string) bool {
+	return strings.HasPrefix(filepath.ToSlash(rel), "kvm/.state.tmp.")
+}
+
+// moveTree moves every file of src into dst like utils.MoveFilesRecursively, but skips runtime
+// temporary files, including one that disappears while it is being moved. Any other file that
+// cannot be moved is an error.
+func moveTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		if runtimeTemp(rel) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		return utils.MoveFile(path, target)
+	})
+}
+
 // installTrashDir is where the previous backup is renamed to before it is removed; the same place
 // as kvmapp/system/update-nanokvm.py uses, on the same filesystem as /root/old.
 var installTrashDir = "/root/.kvm-update/old.removing"
@@ -232,7 +295,9 @@ func listFiles(dir string) (map[string]struct{}, error) {
 		}
 		if !entry.IsDir() {
 			rel, _ := filepath.Rel(dir, path)
-			files[rel] = struct{}{}
+			if !runtimeTemp(rel) {
+				files[rel] = struct{}{}
+			}
 		}
 		return nil
 	})
@@ -281,7 +346,7 @@ func removeIfOnlyDirs(dir string) bool {
 
 func backupCurrentApp() error {
 	// akkijp fork: the previous backup was removed (via installTrashDir) before the record was written.
-	if err := utils.MoveFilesRecursively(installAppDir, installBackupDir); err != nil {
+	if err := moveTree(installAppDir, installBackupDir); err != nil {
 		return fmt.Errorf("failed to backup app: %w", err)
 	}
 
@@ -291,7 +356,7 @@ func backupCurrentApp() error {
 func applyUpdate(sourceDir string) error {
 	if err := utils.MoveFilesRecursively(sourceDir, installAppDir); err != nil {
 		// Try to restore backup on failure
-		if restoreErr := utils.MoveFilesRecursively(installBackupDir, installAppDir); restoreErr != nil {
+		if restoreErr := moveTree(installBackupDir, installAppDir); restoreErr != nil {
 			log.Errorf("Failed to restore backup after update failure: %v", restoreErr)
 		}
 		return fmt.Errorf("failed to move update in place: %w", err)

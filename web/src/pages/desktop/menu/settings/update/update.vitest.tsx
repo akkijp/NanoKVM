@@ -8,9 +8,10 @@ import * as api from '@/api/application.ts';
 
 import { Update } from './index.tsx';
 
-vi.mock('@/api/application.ts', () => ({
+// The real offlineUpdate (it calls fetch, checked below); the version queries are faked.
+vi.mock('@/api/application.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/application.ts')>()),
   getVersion: vi.fn(),
-  offlineUpdate: vi.fn(),
   update: vi.fn(),
   retryRestart: vi.fn()
 }));
@@ -35,6 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 test('a chosen package is sent once with its SHA-256 and its restart is watched', async () => {
@@ -52,9 +54,10 @@ test('a chosen package is sent once with its SHA-256 and its restart is watched'
         }) as never
     )
     .mockImplementation(() => new Promise(() => {}) as never); // later watch queries: pending
-  vi.mocked(api.offlineUpdate).mockResolvedValue(
+  const fetchMock = vi.fn().mockResolvedValue(
     new Response(JSON.stringify({ code: 0 }), { status: 200 })
   );
+  vi.stubGlobal('fetch', fetchMock);
 
   const setIsLocked = vi.fn();
   const { container } = render(<Update setIsLocked={setIsLocked} />);
@@ -68,11 +71,16 @@ test('a chosen package is sent once with its SHA-256 and its restart is watched'
   fireEvent.change(fileInput, { target: { files: [file] } });
 
   await waitFor(() => expect(api.getVersion).toHaveBeenCalledTimes(2));
-  expect(api.offlineUpdate).not.toHaveBeenCalled(); // waits for the baseline
+  expect(fetchMock).not.toHaveBeenCalled(); // waits for the baseline
+  // The watch is stored before the upload goes out (a reload during the install can resume it).
   releaseBaseline();
 
-  await waitFor(() => expect(api.offlineUpdate).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(api.offlineUpdate).mock.calls[0][1]).toBe(sha256);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const [url, init] = fetchMock.mock.calls[0];
+  expect(String(url)).toMatch(/\/api\/application\/update\/offline$/);
+  expect(init.method).toBe('POST');
+  expect(init.headers['X-SHA256-Checksum']).toBe(sha256);
+  expect((init.body as FormData).get('file')).toBe(file);
 
   // Accepted: the restart into 2.5.4.2 is watched (and remembered across a re-login).
   await waitFor(() =>
@@ -83,5 +91,5 @@ test('a chosen package is sent once with its SHA-256 and its restart is watched'
     })
   );
   expect(setIsLocked).toHaveBeenLastCalledWith(true);
-  expect(api.offlineUpdate).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });

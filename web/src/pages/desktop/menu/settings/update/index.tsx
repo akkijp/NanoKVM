@@ -188,6 +188,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // An install failed. It may have left a record (switching: recovery; installed: retry the
   // restart); show that instead of a bare error, which would offer an upload the server refuses.
   function showFailure(message: string) {
+    clearWatch(); // refused: nothing to resume
     setIsLocked(false);
     api
       .getVersion()
@@ -242,12 +243,14 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     }
 
     const refused = (message: string) => {
+      clearWatch();
       // Not restarting: unlock, say why, and keep the retry available.
       setIsLocked(false);
       setStatus('restartPending');
       setErrMsg(message);
     };
 
+    rememberWatch(latestVersion);
     api
       .retryRestart()
       .then((rsp: any) => {
@@ -294,6 +297,17 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       .catch(() => false);
   }
 
+  // Store the watch (target, version and start time before the request) as soon as the request is
+  // about to go out, so that a page reload or re-login while the device installs can resume it.
+  function rememberWatch(target: string) {
+    saveWatch({
+      target,
+      previous: baselineRef.current.version,
+      startedFrom: baselineRef.current.started,
+      until: Date.now() + 10 * 60 * 1000
+    });
+  }
+
   function watchRestart(target: string) {
     // A reply that arrives after the tab was closed must not lock the settings again.
     if (!mountedRef.current) return;
@@ -329,6 +343,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       return;
     }
 
+    rememberWatch(latestVersion); // before the POST: a reload during the install can resume it
     api
       .update(latestVersion)
       .then((rsp: any) => {
@@ -378,6 +393,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             setErrMsg={setErrMsg}
             onInstalled={watchRestart}
             onFailed={showFailure}
+            onSending={rememberWatch}
             ensureBaseline={ensureBaseline}
           />
           <Divider className="opacity-50" />

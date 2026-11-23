@@ -55,6 +55,8 @@ BACKUP_DIR = "/root/old"
 WORK_PARENT = "/root/.kvm-update"
 SERVICE_LOG = "/root/.kvm-update/service.log"
 LOCK_FILE = "/run/nanokvm-update.lock"
+# S95nanokvm's lock for every service operation; held from "switching" to "installed".
+SERVICE_LOCK = "/run/nanokvm-service.lock"
 # The installed init script stops the running app. The new app is started with
 # its own script, so its first start already runs the fork's boot steps.
 STOP_SCRIPT = "/etc/init.d/S95nanokvm"
@@ -73,7 +75,7 @@ PICOCLAW_STATUS = "/run/nanokvm-picoclaw"  # written by S95nanokvm
 # /kvmapp is replaced, "installed" once complete. Same format as server/service/application/pending.go.
 RESTART_PENDING = "/etc/kvm/update-restart-pending"
 # The same rule as pending_installed in S95nanokvm, pending_record.h and pending.go.
-INSTALLED_RECORD_RE = re.compile(r'\A\{ *"from": *"[^"\\\n]*", *"to": *"[^"\\\n]+", *"phase": *"installed" *\}\Z')
+INSTALLED_RECORD_RE = re.compile(r'\A\{ *"from": *"[0-9A-Za-z.+-]*", *"to": *"[0-9A-Za-z.+-]+", *"phase": *"installed" *\}\Z')
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
 START_STABLE = 15
@@ -878,6 +880,34 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
         drop_stage()
         outcome = restart_previous(STOP_SCRIPT)
         raise UpdateError(f"could not remove the previous backup {BACKUP_DIR} ({e}); nothing was installed, and {outcome}")
+    # From "switching" until "installed", hold S95nanokvm's service lock: a restart started
+    # elsewhere must not start from a half-switched /kvmapp. The restart below comes after.
+    service_lock = lock_service_operations()
+    try:
+        install_locked(version, reboots, previous)
+    finally:
+        service_lock.close()
+    start_new_version(version, reboots)
+
+
+def lock_service_operations():
+    fd = os.open(SERVICE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    lock = os.fdopen(fd, "w")
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock
+        except OSError:
+            if time.monotonic() > deadline:
+                lock.close()
+                drop_stage()
+                outcome = restart_previous(STOP_SCRIPT)
+                raise UpdateError(f"a service operation is running (its lock is held); nothing was installed, and {outcome}")
+            time.sleep(0.2)
+
+
+def install_locked(version: str, reboots: str, previous: str) -> None:
     try:
         set_restart_pending("switching", previous, version)
     except OSError as e:
@@ -942,6 +972,9 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
             f"Check {RESTART_PENDING} and recover as described in FORK.md"
         )
 
+
+
+def start_new_version(version: str, reboots: str) -> None:
     if reboots:
         # The first start reboots the device; this process ends with it.
         say(

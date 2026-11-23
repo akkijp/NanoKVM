@@ -192,6 +192,9 @@ func usePendingTestPaths(t *testing.T) string {
 	t.Helper()
 	oldPath, oldCmd, oldDelay, oldPending := updateLockPath, restartCommand, restartDelay, restartPendingPath
 	dir := t.TempDir()
+	oldServiceLock := serviceLockPath
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { serviceLockPath = oldServiceLock })
 	updateLockPath = filepath.Join(dir, "update.lock")
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	restartCommand = []string{"false"}
@@ -296,9 +299,10 @@ func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	oldPending, oldApp, oldBackup := restartPendingPath, installAppDir, installBackupDir
 	restartPendingPath = filepath.Join(dir, "missing-dir", "restart-pending") // cannot be written
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
-	oldTrashForTest := installTrashDir
+	oldTrashForTest, oldServiceLockForTest := installTrashDir, serviceLockPath
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
-	t.Cleanup(func() { installTrashDir = oldTrashForTest })
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { installTrashDir, serviceLockPath = oldTrashForTest, oldServiceLockForTest })
 	t.Cleanup(func() { restartPendingPath, installAppDir, installBackupDir = oldPending, oldApp, oldBackup })
 	if err := os.MkdirAll(filepath.Join(dir, "new"), 0o755); err != nil {
 		t.Fatal(err)
@@ -470,6 +474,9 @@ func TestWritePendingNeverLeavesAPartialRecord(t *testing.T) {
 func TestDirectorySyncFailureLeavesTheAppUntouched(t *testing.T) {
 	dir := t.TempDir()
 	oldPending, oldApp, oldBackup, oldSync, oldTrash := restartPendingPath, installAppDir, installBackupDir, syncDir, installTrashDir
+	oldServiceLock := serviceLockPath
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { serviceLockPath = oldServiceLock })
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
@@ -509,9 +516,10 @@ func TestNewFilesAreSyncedBeforeInstalledIsRecorded(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncFilesystems
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
-	oldTrashForTest := installTrashDir
+	oldTrashForTest, oldServiceLockForTest := installTrashDir, serviceLockPath
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
-	t.Cleanup(func() { installTrashDir = oldTrashForTest })
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { installTrashDir, serviceLockPath = oldTrashForTest, oldServiceLockForTest })
 	var phaseAtSync string
 	syncFilesystems = func() error {
 		record, _ := readPending()
@@ -548,9 +556,10 @@ func TestFailedSyncKeepsSwitching(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncFilesystems
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
-	oldTrashForTest := installTrashDir
+	oldTrashForTest, oldServiceLockForTest := installTrashDir, serviceLockPath
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
-	t.Cleanup(func() { installTrashDir = oldTrashForTest })
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { installTrashDir, serviceLockPath = oldTrashForTest, oldServiceLockForTest })
 	syncFilesystems = func() error { return fmt.Errorf("cannot fork") }
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, syncFilesystems = oldPending, oldApp, oldBackup, oldSync
@@ -626,9 +635,10 @@ func TestWriteBackErrorKeepsSwitching(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldFsync := restartPendingPath, installAppDir, installBackupDir, fsyncPath
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
-	oldTrashForTest := installTrashDir
+	oldTrashForTest, oldServiceLockForTest := installTrashDir, serviceLockPath
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
-	t.Cleanup(func() { installTrashDir = oldTrashForTest })
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { installTrashDir, serviceLockPath = oldTrashForTest, oldServiceLockForTest })
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, fsyncPath = oldPending, oldApp, oldBackup, oldFsync
 	})
@@ -766,6 +776,9 @@ func TestInstallRefusesWhenTheInstalledVersionCannotBeRead(t *testing.T) {
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	oldServiceLock2 := serviceLockPath
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { serviceLockPath = oldServiceLock2 })
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
 	})
@@ -886,6 +899,9 @@ func TestInstallRefusesAnEmptyVersionFile(t *testing.T) {
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	oldServiceLock2 := serviceLockPath
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { serviceLockPath = oldServiceLock2 })
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
 	})
@@ -931,6 +947,9 @@ func TestRestoreWithoutAVersionFileClearsTheRecord(t *testing.T) {
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	oldServiceLock2 := serviceLockPath
+	serviceLockPath = filepath.Join(dir, "service.lock")
+	t.Cleanup(func() { serviceLockPath = oldServiceLock2 })
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
 	})
@@ -979,5 +998,156 @@ func TestInstalledRecordMustBeComplete(t *testing.T) {
 		if !pending || (record.Phase == phaseInstalled) != installed {
 			t.Errorf("%q: phase %q, want installed=%v", content, record.Phase, installed)
 		}
+	}
+}
+
+func TestInstalledRecordRejectsNonVersionText(t *testing.T) {
+	usePendingTestPaths(t)
+	for _, content := range []string{
+		`{"from":"\q","to":"2.5.4.1","phase":"installed"}`,
+		`{"from":"2.5.4 x","to":"2.5.4.1","phase":"installed"}`,
+	} {
+		if err := os.WriteFile(restartPendingPath, []byte(content+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if record, _ := readPending(); record.Phase == phaseInstalled {
+			t.Errorf("%q must not count as installed", content)
+		}
+	}
+}
+
+func TestInstallWaitsForTheServiceLock(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash, oldLock := restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installTrashDir, serviceLockPath = filepath.Join(dir, ".kvm-update", "old.removing"), filepath.Join(dir, "service.lock")
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath = oldPending, oldApp, oldBackup, oldTrash, oldLock
+	})
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"): "2.5.4.1\n",
+		filepath.Join(dir, "new", "version"):    "2.5.4.2\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// S95nanokvm holds its lock (a restart is running); it is released 500 ms later.
+	held, err := os.OpenFile(serviceLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	sawRecordWhileHeld := false
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		_, sawRecordWhileHeld = readPending()
+		_ = held.Close()
+	}()
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err != nil {
+		t.Fatal(err)
+	}
+	if sawRecordWhileHeld {
+		t.Fatal("the switch began while S95nanokvm held its lock")
+	}
+	if readVersionFile(installAppDir) != "2.5.4.2" {
+		t.Fatal("not installed")
+	}
+}
+
+func TestRuntimeTempFilesDoNotBreakTheMove(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+	for path, content := range map[string]string{
+		filepath.Join(src, "kvm", "state"):             "1",
+		filepath.Join(src, "kvm", ".state.tmp.ABC123"): "0",
+		filepath.Join(src, "server", "NanoKVM-Server"): "bin",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The temporary file is renamed away by the running app while the tree is walked.
+	_ = os.Rename(filepath.Join(src, "kvm", ".state.tmp.ABC123"), filepath.Join(src, "kvm", "state"))
+	if err := moveTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "server", "NanoKVM-Server")); string(got) != "bin" {
+		t.Fatal("a real file was not moved")
+	}
+	files, _ := listFiles(dst)
+	for rel := range files {
+		if runtimeTemp(rel) {
+			t.Fatalf("runtime temp file listed: %s", rel)
+		}
+	}
+	// A real file that vanishes is still an error.
+	if err := os.MkdirAll(filepath.Join(dir, "src2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveTree(filepath.Join(dir, "missing"), filepath.Join(dir, "dst2")); err == nil {
+		t.Fatal("moving a missing tree must fail")
+	}
+}
+
+func TestOfflineUpdateWithTheRightSHA256Installs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := usePendingTestPaths(t)
+	oldApp, oldBackup, oldCache, oldSentinel, oldTrash := installAppDir, installBackupDir, installCacheDir, sentinelPath, installTrashDir
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installCacheDir, sentinelPath = filepath.Join(dir, "cache"), filepath.Join(dir, "sentinel")
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	restartCommand = []string{"true"}
+	t.Cleanup(func() {
+		installAppDir, installBackupDir, installCacheDir, sentinelPath, installTrashDir = oldApp, oldBackup, oldCache, oldSentinel, oldTrash
+		setRestartUnderWay(false)
+	})
+	if err := os.MkdirAll(installAppDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := os.ReadFile(fourPartArchive(t, "2.5.4.2", "2.5.4.2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", "nanokvm_2.5.4.2.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(pkg); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(pkg)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update/offline", &body)
+	c.Request.Header.Set("Content-Type", form.FormDataContentType())
+	c.Request.Header.Set("X-SHA256-Checksum", hex.EncodeToString(sum[:]))
+	(&Service{}).OfflineUpdate(c)
+	if !strings.Contains(w.Body.String(), `"code":0`) {
+		t.Fatalf("offline update: %s", w.Body.String())
+	}
+	if readVersionFile(installAppDir) != "2.5.4.2" {
+		t.Fatalf("installed version %q", readVersionFile(installAppDir))
+	}
+	record, pending := readPending()
+	if !pending || record.Phase != phaseInstalled || record.From != "2.5.4.1" || record.To != "2.5.4.2" {
+		t.Fatalf("record %+v %v", record, pending)
 	}
 }

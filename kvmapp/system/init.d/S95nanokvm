@@ -133,7 +133,7 @@ PENDING=/etc/kvm/update-restart-pending
 # "installed" record counts as installed; anything else (switching, truncated, garbage) does not.
 pending_installed() {
     [ "$(grep -c '' "$PENDING" 2>/dev/null)" -eq 1 ] 2>/dev/null \
-        && grep -Eqx '^\{ *"from": *"[^"]*", *"to": *"[^"]+", *"phase": *"installed" *\}$' "$PENDING"
+        && grep -Eqx '^\{ *"from": *"[0-9A-Za-z.+-]*", *"to": *"[0-9A-Za-z.+-]+", *"phase": *"installed" *\}$' "$PENDING"
 }
 
 pending_blocks_start() {
