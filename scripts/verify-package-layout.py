@@ -32,6 +32,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as work:
         # The staged copy is not written here; check space against the work directory only.
         updater.STAGE_DIR = str(pathlib.Path(work) / "stage")
+        # The device keeps a free-space reserve when installing; here only the unpacked size counts.
+        updater.MIN_FREE_RESERVE = 0
+        updater.FREE_RESERVE_PERCENT = 0
         try:
             version = updater.version_from_name(package)
             updater.extract(package, version, work)

@@ -263,6 +263,32 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assertTrue(stage.exists())
 
+    def test_ctrl_c_or_hangup_during_stop_does_not_leave_kvm_down(self):
+        for sig in ("INT", "HUP"):
+            with self.subTest(signal=sig):
+                self.tearDown()
+                self.setUp()
+                # The stop script signals the updater, as Ctrl-C or a dropped SSH session would.
+                write_script(pathlib.Path(self.u.STOP_SCRIPT), f"#!/bin/sh\nkill -{sig} {os.getpid()}\nexit 0\n".encode())
+                path, digest = self.package("2.5.4.1")
+                self.run_update(file=path, sha512=digest)
+                self.assertEqual(self.installed_version(), "2.5.4.1")
+                self.assertIn("restart", self.calls())
+
+    def test_signal_handlers_are_restored(self):
+        import signal
+        before = signal.getsignal(signal.SIGINT)
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+
+    def test_lock_file_is_private(self):
+        pathlib.Path(self.u.LOCK_FILE).write_text("")
+        os.chmod(self.u.LOCK_FILE, 0o644)
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest, dry_run=True)
+        self.assertEqual(os.stat(self.u.LOCK_FILE).st_mode & 0o777, 0o600)
+
     def test_staging_failure_happens_before_stop(self):
         def broken(source_dir):
             raise OSError("chmod failed")
@@ -559,9 +585,6 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertNotIn("sipeed", SCRIPT.read_text())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 S95 = SCRIPT.parent / "init.d/S95nanokvm"
 
@@ -634,3 +657,7 @@ class MicrophoneTest(unittest.TestCase):
             branch = text[text.index(f"  {action}"):]
             branch = branch[:branch.index(";;")]
             self.assertIn("start_services", branch, action)
+
+
+if __name__ == "__main__":
+    unittest.main()

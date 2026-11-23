@@ -42,10 +42,14 @@ echo "== source $VERSION = $SHA"
 git -C "$REPO" fetch -q --no-tags origin "$SHA"
 
 TREE="$(mktemp -d)/NanoKVM"
+# Set by this run only (never inherited from the caller's environment).
+IMAGE=""
+STAGE=""
 cleanup() {
     local status=$?
     set +e
-    [ -n "${IMAGE:-}" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
+    [ -n "$IMAGE" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
+    [ -n "$STAGE" ] && [ -d "$STAGE" ] && rm -rf "$STAGE"  # a partial copy; the complete set was renamed away
     git -C "$REPO" worktree remove --force "$TREE" >/dev/null 2>&1
     rm -rf "$(dirname "$TREE")"
     exit "$status"

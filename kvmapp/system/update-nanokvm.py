@@ -39,6 +39,7 @@ import os
 import posixpath
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -108,6 +109,31 @@ class UpdateError(Exception):
     pass
 
 
+def say(message: str, err: bool = False) -> None:
+    """Print, but never fail: once the SSH session is gone the terminal raises EIO/EPIPE,
+    and an update must not stop half-way because of a message."""
+    try:
+        print(message, file=sys.stderr if err else sys.stdout, flush=True)
+    except OSError:
+        pass
+
+
+class Uninterruptible:
+    """From stopping the old version until the restart is requested, Ctrl-C and a dropped SSH
+    session (SIGINT, SIGHUP, SIGPIPE, SIGTERM) must not end the process: the KVM would stay down."""
+
+    SIGNALS = (signal.SIGINT, signal.SIGHUP, signal.SIGPIPE, signal.SIGTERM)
+
+    def __enter__(self):
+        self.saved = {sig: signal.signal(sig, signal.SIG_IGN) for sig in self.SIGNALS}
+        return self
+
+    def __exit__(self, *exc):
+        for sig, handler in self.saved.items():
+            signal.signal(sig, handler)
+        return False
+
+
 def parse_digest(value: str) -> bytes:
     value = value.strip()
     if re.fullmatch(r"[0-9a-fA-F]{128}", value):
@@ -123,7 +149,7 @@ def parse_digest(value: str) -> bytes:
 
 def fetch(url: str, dest, limit: int) -> None:
     """Stream url into the open file dest, refusing more than limit bytes."""
-    print(f"Downloading {url}")
+    say(f"Downloading {url}")
     request = urllib.request.Request(url, headers={"User-Agent": "nanokvm-updater"})
     with urllib.request.urlopen(request, timeout=60) as response:
         if response.status != 200:
@@ -266,11 +292,11 @@ def extract(package: str, version: str, work: str) -> str:
 
 
 def service(script: str, action: str) -> int:
-    print(f"{script} {action}")
+    say(f"{script} {action}")
     try:
         return subprocess.run([script, action]).returncode
     except OSError as e:
-        print(f"cannot run {script}: {e}", file=sys.stderr)
+        say(f"cannot run {script}: {e}", err=True)
         return 127
 
 
@@ -395,6 +421,11 @@ def install(source_dir: str, version: str) -> None:
     if os.path.exists(STAGE_DIR):
         shutil.rmtree(STAGE_DIR)
     shutil.move(source_dir, STAGE_DIR)
+    with Uninterruptible():
+        switch_and_start(version, reboots)
+
+
+def switch_and_start(version: str, reboots: bool) -> None:
     try:
         stop_old()
     except UpdateError:
@@ -415,11 +446,10 @@ def install(source_dir: str, version: str) -> None:
 
     if reboots:
         # The first start replaces the HDMI driver and reboots; this process ends with it.
-        print(
+        say(
             f"{version} is installed. Its first start replaces the HDMI driver and reboots the device. "
             "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server && pidof kvm_system"
         )
-        sys.stdout.flush()
         if service(app_script(), "restart") != 0:
             raise UpdateError(
                 f"{version} is installed but its first start failed before rebooting. The previous "
@@ -433,11 +463,13 @@ def install(source_dir: str, version: str) -> None:
             f"{version} is installed but did not start. The previous version is in {BACKUP_DIR}; "
             "to recover, write the official NanoKVM image to the microSD card (see FORK.md)"
         )
-    print(f"Previous version kept in {BACKUP_DIR}")
+    say(f"Previous version kept in {BACKUP_DIR}")
 
 
 def acquire_lock():
-    lock = open(LOCK_FILE, "w")
+    fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+    os.fchmod(fd, 0o600)  # an older file may have been created with the umask
+    lock = os.fdopen(fd, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -492,12 +524,12 @@ def run_locked(args, work: str) -> str:
 
     if sha512_of(package) != expected:
         raise UpdateError("sha512 does not match; package not installed")
-    print(f"sha512 verified for {version}")
+    say(f"sha512 verified for {version}")
 
     source_dir = extract(package, version, work)
     os.remove(package)  # not needed any more; frees its space before anything is stopped
     if args.dry_run:
-        print("Dry run: package is valid, nothing installed")
+        say("Dry run: package is valid, nothing installed")
         return version
     install(source_dir, version)
     return version
@@ -514,10 +546,10 @@ def main() -> int:
     try:
         version = run(args)
     except Exception as e:
-        print(f"update failed\n{e}", file=sys.stderr)
+        say(f"update failed\n{e}", err=True)
         return 1
     if not args.dry_run:
-        print(f"Successfully updated to version: {version}")
+        say(f"Successfully updated to version: {version}")
     return 0
 
 

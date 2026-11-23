@@ -3,6 +3,7 @@ pnpm-debug.log*
 
 web/node_modules
 web/dist
+web/dist.new
 web/web
 
 # pnpm keeps its content-addressable store next to the project when the

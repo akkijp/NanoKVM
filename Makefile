@@ -108,12 +108,16 @@ release-build: check-root builder-image
 	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(IMAGE_NAME) /bin/bash -c '$(RELEASE_BUILD_CMD)'
 
 # Build the frontend in the pinned node container (scripts/fork-env.sh; pnpm is pinned by
-# "packageManager" in web/package.json). The builder image has no Node.
+# "packageManager" in web/package.json). The builder image has no Node. The source is copied
+# into the container without node_modules, so a host checkout's own dependencies are neither
+# used nor replaced; only dist/ is written back.
 web:
+	@rm -rf web/dist.new && mkdir -p web/dist.new
 	@echo "Building web..."
 	@. scripts/fork-env.sh && docker run --rm -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
-		-v "$(PWD)/web:/w" -w /w "$$NODE_IMAGE" bash -euc \
-		'mkdir -p /tmp/bin && corepack enable --install-directory /tmp/bin && export PATH=/tmp/bin:$$PATH && pnpm install --frozen-lockfile && pnpm build'
+		-v "$(PWD)/web:/src:ro" -v "$(PWD)/web/dist.new:/out" "$$NODE_IMAGE" bash -euc \
+		'mkdir -p /tmp/web && cd /src && tar --exclude=./node_modules --exclude=./dist --exclude=./dist.new -cf - . | tar -C /tmp/web -xf - && cd /tmp/web && mkdir -p /tmp/bin && corepack enable --install-directory /tmp/bin && export PATH=/tmp/bin:$$PATH && pnpm install --frozen-lockfile && pnpm build && cp -a dist/. /out/'
+	@rm -rf web/dist && mv web/dist.new web/dist
 
 # Assemble the release package and its manifest
 package:
