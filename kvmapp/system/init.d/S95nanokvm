@@ -117,6 +117,20 @@ stop_services() {
     stop_process kvm_system || return 1
 }
 
+# akkijp fork: the record of an update not yet seen running (server/service/application/pending.go).
+PENDING=/etc/kvm/update-restart-pending
+
+# An update that stopped while replacing /kvmapp ("switching", or a record that cannot be read)
+# leaves /kvmapp possibly half old, half new. Starting from it would run the half-new migration
+# (which rewrites boot scripts in /etc), so do not start at all; recover as described in FORK.md.
+pending_blocks_start() {
+    [ -f "$PENDING" ] || return 1
+    grep -q '"phase": *"installed"' "$PENDING" && return 1
+    echo "An earlier update stopped while replacing /kvmapp ($PENDING); not starting. See FORK.md" >&2
+    logger -t nanokvm -p user.err "an earlier update stopped half-way; not starting, see FORK.md" 2>/dev/null || true
+    return 0
+}
+
 start_services() {
     # Runs on start and restart, so an update takes effect without a reboot. If the microphone
     # stays on, the KVM still starts (it is the way in to fix it), but the start reports failure.
@@ -146,21 +160,22 @@ start_services() {
     cp -r /kvmapp/server /tmp/ || return 1
     # Daemons must not inherit the service-operation lock.
     /tmp/kvm_system/kvm_system 9>&- &
+    kvm_pid=$!
     /tmp/server/NanoKVM-Server 9>&- &
-    # akkijp fork: an update waiting for this restart counts as running only once both daemons
-    # have stayed up; until then /root/old must not be replaced (server/service/application/pending.go).
-    # Only an "installed" record for the version just started is cleared; a "switching" or
-    # unreadable record means an earlier update stopped half-way, and is kept for manual recovery.
-    pending=/etc/kvm/update-restart-pending
-    if [ -f "$pending" ]; then
-        pending_to="$(sed -n 's/.*"to": *"\([^"]*\)".*/\1/p' "$pending")"
-        if grep -q '"phase": *"installed"' "$pending" && [ -n "$pending_to" ] \
+    server_pid=$!
+    # akkijp fork: an update waiting for this restart counts as running only once the two daemons
+    # started here have stayed up; until then /root/old must not be replaced. Only an "installed"
+    # record for the version just started is cleared, and only if it has not changed meanwhile
+    # (another restart or update would have its own check).
+    if [ -f "$PENDING" ]; then
+        pending_to="$(sed -n 's/.*"to": *"\([^"]*\)".*/\1/p' "$PENDING")"
+        if grep -q '"phase": *"installed"' "$PENDING" && [ -n "$pending_to" ] \
             && [ "$pending_to" = "$(cat /kvmapp/version 2>/dev/null)" ]; then
-            (sleep 15; pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1 \
-                && rm -f "$pending") 9>&- >/dev/null 2>&1 &
-        else
-            echo "An earlier update stopped half-way ($pending); see FORK.md" >&2
-            logger -t nanokvm -p user.err "an earlier update stopped half-way; see FORK.md" 2>/dev/null || true
+            pending_sum="$(cksum < "$PENDING")"
+            (sleep 15
+             kill -0 "$kvm_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null \
+                && [ "$(cksum < "$PENDING" 2>/dev/null)" = "$pending_sum" ] && rm -f "$PENDING"
+            ) 9>&- >/dev/null 2>&1 &
         fi
     fi
     return "$boot_status"
@@ -168,6 +183,7 @@ start_services() {
 
 case "$1" in
   start)
+    pending_blocks_start && exit 1
     echo -n kvm > /boot/hostname.prefix
     [ -e /root/.profile ] || printf '%s\n' 'export PS1="\u@\h:\w# "' > /root/.profile
 
@@ -220,6 +236,7 @@ case "$1" in
    ;;
 
   restart)
+    pending_blocks_start && exit 1
     stop_services || exit 1
     start_services || exit 1
 

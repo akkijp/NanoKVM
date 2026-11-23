@@ -355,3 +355,69 @@ func TestRemoveIfOnlyDirs(t *testing.T) {
 		t.Fatal("the remaining file was removed")
 	}
 }
+
+func TestConfirmingEndsAfterTheDeadline(t *testing.T) {
+	usePendingTestPaths(t)
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(restartPendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Started after the record, but long ago: kvm_system did not stay up, so retrying is allowed.
+	processStart = info.ModTime().Add(time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+	oldDeadline := confirmDeadline
+	confirmDeadline = time.Nanosecond
+	t.Cleanup(func() { processStart, confirmDeadline = time.Now(), oldDeadline })
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"installed"`) {
+		t.Fatalf("version after the deadline: %s", body)
+	}
+}
+
+func TestRestoreExactlyRemovesFilesTheNewVersionAdded(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"version", "server/NanoKVM-Server"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := listFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "kvm_new_app"), nil, 0o644); err != nil { // added by the new version
+		t.Fatal(err)
+	}
+	if !restoreExactly(dir, want) {
+		t.Fatal("restore with an extra file must be fixed up")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "kvm_new_app")); err == nil {
+		t.Fatal("kvm_new_app of the new version was left behind")
+	}
+	if err := os.Remove(filepath.Join(dir, "server/NanoKVM-Server")); err != nil {
+		t.Fatal(err)
+	}
+	if restoreExactly(dir, want) {
+		t.Fatal("a restore missing a file is not complete")
+	}
+}
+
+func TestVersionReportsMicrophoneWhenLatestCannotBeFetched(t *testing.T) {
+	usePendingTestPaths(t)
+	oldMic, oldBase := microphoneStatus, updateBaseURL
+	microphoneStatus = filepath.Join(t.TempDir(), "mic")
+	updateBaseURL = "http://127.0.0.1:1/unreachable"
+	t.Cleanup(func() { microphoneStatus, updateBaseURL = oldMic, oldBase })
+	if err := os.WriteFile(microphoneStatus, []byte("FAILED: capture still present on card 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := call((*Service).GetVersion, http.MethodGet, "/api/application/version")
+	if !strings.Contains(body, `"microphone":"FAILED`) || !strings.Contains(body, `"latestError"`) {
+		t.Fatalf("version without network: %s", body)
+	}
+}

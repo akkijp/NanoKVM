@@ -70,7 +70,11 @@ func (s *Service) GetVersion(c *gin.Context) {
 	latest, err := getLatest()
 	if err != nil {
 		log.Errorf("failed to get latest version: %s", err)
-		rsp.ErrRsp(c, -1, "failed to query latest version")
+		// akkijp fork: still report the local state (a microphone that could not be disabled must
+		// be visible on a KVM that has no internet access).
+		rsp.OkRspWithData(c, &proto.GetVersionRsp{
+			Current: currentVersion, Microphone: microphone, LatestError: "failed to query latest version",
+		})
 		return
 	}
 	latestVersion = latest.Version

@@ -73,7 +73,7 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 
 - 新しい版の S95 は、2 つのデーモンが 15 秒動き続けたら記録を消す
 - `installed` のまま再起動に失敗したときは、画面の「再起動をやり直す」か `/kvmapp/system/init.d/S95nanokvm restart`
-- `switching` のまま止まったとき（入れ替えの途中で電源が落ちた等）は、再起動せずに下の手順で戻す
+- `switching` のまま止まったとき（入れ替えの途中で電源が落ちた等）や記録が読めないときは、S95 が KVM を起動しない（`/kvmapp` が新旧まじりかもしれず、新しい版の移行処理が `/etc` を書き換えてしまうため）。SSH は使えるので、下の microSD の書き直しで戻すか、`/kvmapp` と `/root/old` を確かめて手で戻したうえで記録を消す
 - 前の版（`from`）か新しい版（`to`）が `/kvmapp` にそろって 2 つのデーモンが動いていれば、`update-nanokvm.py` が記録を消して先へ進む（上流の S95 で前の版が起動し直した場合など）
 
 自動では戻さない。戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。

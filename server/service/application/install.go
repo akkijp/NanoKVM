@@ -60,6 +60,11 @@ func installPreparedPackage(sourceDir string) error {
 	if err := writePending(record); err != nil {
 		return err
 	}
+	oldFiles, err := listFiles(AppDir)
+	if err != nil {
+		_ = clearPending() // nothing has been moved yet
+		return fmt.Errorf("list the current app: %w", err)
+	}
 	if err := backupCurrentApp(); err != nil {
 		return err // the old app may be partly moved: keep the record as "switching"
 	}
@@ -67,8 +72,8 @@ func installPreparedPackage(sourceDir string) error {
 	if err := applyUpdate(sourceDir); err != nil {
 		// The backup was moved back file by file; it leaves its directories behind. Only when
 		// nothing but empty directories is left was the restore complete.
-		if readVersionFile(AppDir) == record.From && record.From != "" && removeIfOnlyDirs(BackupDir) {
-			_ = clearPending() // the old version is in place again
+		if record.From != "" && removeIfOnlyDirs(BackupDir) && restoreExactly(AppDir, oldFiles) {
+			_ = clearPending() // the old version is in place again, file for file
 		}
 		return err
 	}
@@ -83,6 +88,45 @@ func installPreparedPackage(sourceDir string) error {
 		return err
 	}
 	return nil
+}
+
+// listFiles lists the regular files under dir, relative to it.
+func listFiles(dir string) (map[string]struct{}, error) {
+	files := make(map[string]struct{})
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			rel, _ := filepath.Rel(dir, path)
+			files[rel] = struct{}{}
+		}
+		return nil
+	})
+	return files, err
+}
+
+// restoreExactly makes dir hold exactly the files listed (after a restore from the backup, files
+// the new version had already put there, such as kvm_new_app, are removed) and reports whether
+// it now does.
+func restoreExactly(dir string, want map[string]struct{}) bool {
+	have, err := listFiles(dir)
+	if err != nil {
+		return false
+	}
+	for rel := range have {
+		if _, ok := want[rel]; !ok {
+			if err := os.Remove(filepath.Join(dir, rel)); err != nil {
+				return false
+			}
+		}
+	}
+	for rel := range want {
+		if _, ok := have[rel]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // removeIfOnlyDirs removes dir when it holds nothing but (empty) directories and reports whether

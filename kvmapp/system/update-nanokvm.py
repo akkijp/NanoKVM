@@ -476,7 +476,7 @@ def check_not_interrupted() -> None:
         # failed restart) and /kvmapp is one of the two versions. In the "switching" phase,
         # also nothing may have been moved to /root/old yet (the web updater moves file by file).
         settled = (whole and current and current in (record.get("from"), record.get("to"))
-                   and daemons_run_app()
+                   and daemons_run_app(os.stat(RESTART_PENDING).st_mtime)
                    and (record.get("phase") == "installed" or only_dirs(BACKUP_DIR)))
         if settled:
             say(f"{current} is running from {APP_DIR}; clearing the record of the earlier update")
@@ -565,18 +565,34 @@ def pids(name: str) -> list:
     return result.stdout.split() if result.returncode == 0 else []
 
 
-def daemons_run_app() -> bool:
-    """Both daemons run, and they run the binaries in /kvmapp (S95nanokvm starts copies in /tmp,
-    so compare contents): not old processes left behind by a failed restart."""
+PROC = "/proc"
+
+
+def process_start(pid: str) -> float:
+    """Start time of a process, in seconds since the epoch (from /proc/<pid>/stat and btime)."""
+    with open(f"{PROC}/{pid}/stat") as f:
+        # The command name may contain spaces; the fields after it are fixed.
+        fields = f.read().rsplit(")", 1)[1].split()
+    ticks = int(fields[19])  # field 22 overall: starttime, in clock ticks since boot
+    with open(f"{PROC}/stat") as f:
+        btime = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+    return btime + ticks / os.sysconf("SC_CLK_TCK")
+
+
+def daemons_run_app(since: float) -> bool:
+    """Both daemons run the binaries in /kvmapp (S95nanokvm starts copies in /tmp, so compare
+    contents) and were started after `since`: not old processes left behind by a failed restart,
+    even when the old and new binaries are identical."""
     for name, rel in (("NanoKVM-Server", "server/NanoKVM-Server"), ("kvm_system", "kvm_system/kvm_system")):
         found = pids(name)
         if not found:
             return False
         try:
             wanted = sha512_of(os.path.join(APP_DIR, rel))
-            if any(sha512_of(f"/proc/{pid}/exe") != wanted for pid in found):
-                return False
-        except OSError:
+            for pid in found:
+                if sha512_of(f"{PROC}/{pid}/exe") != wanted or process_start(pid) <= since:
+                    return False
+        except (OSError, ValueError, IndexError, StopIteration):
             return False
     return True
 

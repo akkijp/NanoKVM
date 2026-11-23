@@ -58,7 +58,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.stopped = lambda: True
         self.u.started = lambda: True
         self.u.running = lambda name: False
-        self.u.daemons_run_app = lambda: False
+        self.u.daemons_run_app = lambda since: False
         self.real_migration_reboots = self.u.migration_reboots
         self.u.migration_reboots = lambda: False
         self.u.check_same_filesystem = lambda: None
@@ -452,7 +452,7 @@ class UpdateScriptTest(unittest.TestCase):
         # Power was lost after the record was written; the upstream init script, which does not
         # know the record, started the previous version again.
         pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "switching"}')
-        self.u.daemons_run_app = lambda: True
+        self.u.daemons_run_app = lambda since: True
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
         self.assertEqual(self.installed_version(), "2.5.4.1")
@@ -462,7 +462,7 @@ class UpdateScriptTest(unittest.TestCase):
         (pathlib.Path(self.u.APP_DIR) / "version").write_text("2.5.4.1\n")
         pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "installed"}')
         self.u.running = lambda name: True
-        self.u.daemons_run_app = lambda: False  # the running binaries are not the ones in /kvmapp
+        self.u.daemons_run_app = lambda since: False  # the running binaries are not the ones in /kvmapp
         path, digest = self.package("2.5.4.2")
         self.assert_rejected_keeping("not been seen running", file=path, sha512=digest)
         self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
@@ -472,7 +472,7 @@ class UpdateScriptTest(unittest.TestCase):
         pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "switching"}')
         (pathlib.Path(self.u.BACKUP_DIR) / "kvm").mkdir(parents=True)
         (pathlib.Path(self.u.BACKUP_DIR) / "kvm/fps").write_text("30")
-        self.u.daemons_run_app = lambda: True
+        self.u.daemons_run_app = lambda since: True
         path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "stopped while replacing"):
             self.run_update(file=path, sha512=digest)
@@ -485,19 +485,25 @@ class UpdateScriptTest(unittest.TestCase):
         self.run_update(file=path, sha512=digest)
         self.assertEqual(self.installed_version(), "2.5.4.1")
 
-    def test_daemons_run_app_compares_the_running_binaries(self):
+    def test_daemons_run_app_checks_binaries_and_start_time(self):
         u = load()
         u.APP_DIR = self.u.APP_DIR
-        exe = self.base / "proc-exe"
-        exe.write_text("old")
+        proc = self.base / "proc"
+        (proc / "1").mkdir(parents=True)
+        (proc / "1/exe").write_text("old")  # same content as the /kvmapp binaries
+        # starttime (field 22) = 500 ticks after boot; btime = 1000 s
+        fields = ["S"] + ["0"] * 18 + ["500"] + ["0"] * 10
+        (proc / "1/stat").write_text("1 (kvm system) " + " ".join(fields) + "\n")
+        (proc / "stat").write_text("cpu 0\nbtime 1000\n")
+        u.PROC = str(proc)
         u.pids = lambda name: ["1"]
-        real_sha = u.sha512_of
-        u.sha512_of = lambda path: real_sha(str(exe)) if path.startswith("/proc/") else real_sha(path)
-        self.assertTrue(u.daemons_run_app())  # /kvmapp binaries also say "old"
-        exe.write_text("new")
-        self.assertFalse(u.daemons_run_app())
+        start = 1000 + 500 / os.sysconf("SC_CLK_TCK")
+        self.assertTrue(u.daemons_run_app(start - 1))   # started after the record
+        self.assertFalse(u.daemons_run_app(start + 1))  # an old process with identical binaries
+        (proc / "1/exe").write_text("other")
+        self.assertFalse(u.daemons_run_app(start - 1))
         u.pids = lambda name: []
-        self.assertFalse(u.daemons_run_app())
+        self.assertFalse(u.daemons_run_app(start - 1))
 
     def assert_rejected_keeping(self, message, **kw):
         with self.assertRaisesRegex(self.u.UpdateError, message):
@@ -1005,15 +1011,18 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text(), "")
         self.assertEqual(status, "on")
 
-    def run_s95(self, action, mic_fails=False, picoclaw_fails=False, pidof_after_start=False):
+    def run_s95(self, action, mic_fails=False, picoclaw_fails=False, pidof_after_start=False, expect_status=None):
         """Run the real S95nanokvm branch with everything that touches the device stubbed out,
         recording the order of the fork's boot steps and the daemon starts."""
         log = self.base / "order.log"
         text = S95.read_text()
         text = text.replace("exec 9>/run/nanokvm-service.lock || exit 1", "exec 9>/dev/null")
         text = text.replace("flock -n 9 ||", "true ||")
-        text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", "record daemon-kvm_system")
-        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", "record daemon-NanoKVM-Server; : > " + str(self.base / "started"))
+        # Daemons: real processes that either stay up for a while or exit at once.
+        daemon = "command sleep 4" if pidof_after_start else "true"
+        text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", f"record daemon-kvm_system; {daemon} >/dev/null 2>&1 &")
+        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", f"record daemon-NanoKVM-Server; {daemon} >/dev/null 2>&1 &")
+        text = text.replace("(sleep 15", "(command sleep 1")
         # Every write the script makes goes under the temp dir, never to the host.
         fake = self.base / "fs"
         for prefix in ("/boot/", "/root/", "/device_key", "/mnt/", "/kvmapp", "/sys/", "/etc/", "/run/"):
@@ -1024,7 +1033,7 @@ class MicrophoneTest(unittest.TestCase):
 record() {{ echo "$1" >> {log}; }}
 disable_audio_capture() {{ record mic; return {1 if mic_fails else 0}; }}
 disable_picoclaw() {{ record picoclaw; return {1 if picoclaw_fails else 0}; }}
-pidof() {{ [ -f {self.base}/started ] && return {0 if pidof_after_start else 1}; return 1; }}
+pidof() {{ return 1; }}
 killall() {{ :; }}
 iptables() {{ return 0; }}
 rm() {{ case "$*" in *update-restart-pending*) command rm "$@" ;; esac; }}
@@ -1038,8 +1047,11 @@ sleep() {{ :; }}
         head, case = text.split('case "$1" in', 1)
         script = head + stubs + 'case "$1" in' + case
         result = subprocess.run(["sh", "-c", script, "S95nanokvm", action], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1 if (mic_fails or picoclaw_fails) else 0, result.stderr)
-        if action == "start":  # written into the fake /boot, not the host's (macOS sh prints "-n" literally)
+        self.last_result = result
+        if expect_status is None:
+            expect_status = 1 if (mic_fails or picoclaw_fails) else 0
+        self.assertEqual(result.returncode, expect_status, result.stderr)
+        if action == "start" and expect_status in (None, 0, 1) and "not starting" not in result.stderr:
             self.assertTrue((fake / "boot/hostname.prefix").read_text().strip().endswith("kvm"))
         return log.read_text().split() if log.exists() else []
 
@@ -1062,8 +1074,6 @@ sleep() {{ :; }}
             (installed.replace(":", ": "), "2.5.4.1", True, True),  # Python-style JSON
             (installed, "2.5.4.1", False, False),     # a daemon died
             (installed, "2.4.3", True, False),        # another version was started
-            ('{"from":"2.4.3","to":"2.5.4.1","phase":"switching"}', "2.5.4.1", True, False),
-            ("", "2.5.4.1", True, False),             # unreadable record
         )
         for content, started_version, daemons_up, cleared in cases:
             with self.subTest(content=content, version=started_version, daemons_up=daemons_up):
@@ -1073,13 +1083,38 @@ sleep() {{ :; }}
                 record.write_text(content)
                 (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
                 (fake / "kvmapp/version").write_text(started_version + "\n")
-                (self.base / "started").unlink(missing_ok=True)
                 self.run_s95("start", pidof_after_start=daemons_up)
-                for _ in range(40):  # the check runs in the background
+                for _ in range(60):  # the check runs in the background
                     if record.exists() != cleared:
                         break
                     __import__("time").sleep(0.05)
                 self.assertEqual(record.exists(), not cleared)
+
+    def test_half_way_record_stops_start_and_restart_before_anything_runs(self):
+        for content in ('{"from":"2.4.3","to":"2.5.4.1","phase":"switching"}', "", "garbage"):
+            for action in ("start", "restart"):
+                with self.subTest(content=content, action=action):
+                    fake = self.base / "fs"
+                    record = fake / "etc/kvm/update-restart-pending"
+                    record.parent.mkdir(parents=True, exist_ok=True)
+                    record.write_text(content)
+                    (self.base / "order.log").unlink(missing_ok=True)
+                    order = self.run_s95(action, expect_status=1)
+                    self.assertEqual(order, [], "nothing may run: no boot steps, migration or daemons")
+                    self.assertIn("not starting", self.last_result.stderr)
+                    self.assertTrue(record.exists())
+
+    def test_record_changed_during_the_check_is_kept(self):
+        fake = self.base / "fs"
+        record = fake / "etc/kvm/update-restart-pending"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text('{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}')
+        (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
+        (fake / "kvmapp/version").write_text("2.5.4.1\n")
+        self.run_s95("start", pidof_after_start=True)
+        record.write_text('{"from":"2.5.4.1","to":"2.5.4.2","phase":"installed"}')  # a newer update
+        __import__("time").sleep(2)
+        self.assertTrue(record.exists())
 
     def test_picoclaw_failure_fails_the_start(self):
         for action in ("start", "restart"):

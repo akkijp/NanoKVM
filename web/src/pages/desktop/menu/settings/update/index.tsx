@@ -21,9 +21,17 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const [errMsg, setErrMsg] = useState('');
   const [microphone, setMicrophone] = useState('');
   const versionRequestRef = useRef(0);
+  const recheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     checkForUpdates();
+    return () => {
+      // akkijp fork: no re-check after the page is gone (and none from a reply still in flight).
+      mountedRef.current = false;
+      if (recheckTimerRef.current) clearTimeout(recheckTimerRef.current);
+    };
   }, []);
 
   function checkForUpdates() {
@@ -33,7 +41,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     api
       .getVersion()
       .then((rsp: any) => {
-        if (requestId !== versionRequestRef.current) return;
+        if (requestId !== versionRequestRef.current || !mountedRef.current) return;
         if (rsp.code !== 0 || !rsp.data) {
           setStatus('failed');
           setErrMsg(t('settings.update.queryFailed'));
@@ -50,10 +58,20 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           if (rsp.data.restartPhase === 'confirming') {
             // Restarted; the device is checking that both daemons stay up. Look again shortly.
             setStatus('confirming');
-            setTimeout(checkForUpdates, 5000);
+            if (mountedRef.current) {
+              if (recheckTimerRef.current) clearTimeout(recheckTimerRef.current);
+              recheckTimerRef.current = setTimeout(checkForUpdates, 5000);
+            }
           } else {
             setStatus(rsp.data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
           }
+          return;
+        }
+
+        if (rsp.data.latestError) {
+          // The local state above (microphone) is still shown.
+          setStatus('failed');
+          setErrMsg(t('settings.update.queryFailed'));
           return;
         }
 

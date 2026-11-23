@@ -34,7 +34,8 @@ var (
 
 	// processStart tells a server started by the restart (after the record was last written)
 	// from the old one still running because the restart failed.
-	processStart = time.Now()
+	processStart    = time.Now()
+	confirmDeadline = 60 * time.Second
 )
 
 const (
@@ -51,7 +52,10 @@ func reportedPhase(record pendingRecord) string {
 	if record.Phase != phaseInstalled {
 		return record.Phase
 	}
-	if info, err := os.Stat(restartPendingPath); err == nil && processStart.After(info.ModTime()) {
+	// S95nanokvm clears the record 15 s after starting both daemons. If it is still there well
+	// after this server started, a daemon did not stay up: the restart may be retried.
+	if info, err := os.Stat(restartPendingPath); err == nil && processStart.After(info.ModTime()) &&
+		time.Since(processStart) < confirmDeadline {
 		return phaseConfirming
 	}
 	return phaseInstalled
