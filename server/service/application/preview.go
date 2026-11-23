@@ -15,10 +15,10 @@ const (
 func (s *Service) GetPreview(c *gin.Context) {
 	var rsp proto.Response
 
-	isEnabled := isPreviewEnabled()
-
+	// akkijp fork: updates always come from the fork's stable releases, so report the
+	// effective value even if an upstream build left the preview flag behind.
 	rsp.OkRspWithData(c, &proto.GetPreviewRsp{
-		Enabled: isEnabled,
+		Enabled: false,
 	})
 }
 
@@ -28,6 +28,11 @@ func (s *Service) SetPreview(c *gin.Context) {
 
 	if err := proto.ParseFormRequest(c, &req); err != nil {
 		rsp.ErrRsp(c, -1, "invalid arguments")
+		return
+	}
+
+	if req.Enable {
+		rsp.ErrRsp(c, -4, "preview updates are disabled in this build (akkijp fork)")
 		return
 	}
 

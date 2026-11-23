@@ -29,9 +29,10 @@ if [ -e "$OUT" ]; then
     exit 1
 fi
 
-git -C "$REPO" fetch -q origin --tags --force
 SHA="$(cd "$REPO" && scripts/verify-release-tag.sh "$VERSION")"
 echo "== source $VERSION = $SHA"
+# Fetch only that commit; local tags are left as they are.
+git -C "$REPO" fetch -q --no-tags origin "$SHA"
 
 TREE="$(mktemp -d)/NanoKVM"
 cleanup() {
@@ -41,12 +42,8 @@ cleanup() {
 trap cleanup EXIT
 git -C "$REPO" worktree add -q --detach "$TREE" "$SHA"
 cd "$TREE"
-. scripts/fork-env.sh
 
-make release-build DOCKER_TTY=
-docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$TREE/web:/w" -w /w "$NODE_IMAGE" bash -euc \
-    'mkdir -p /tmp/bin && corepack enable --install-directory /tmp/bin && export PATH=/tmp/bin:$PATH && pnpm install --frozen-lockfile && pnpm build'
-make package VERSION="$VERSION"
+make release VERSION="$VERSION" DOCKER_TTY=
 
 scripts/verify-release-assets.sh build/release "$VERSION"
 if [ "$(git rev-parse HEAD)" != "$SHA" ] || [ -n "$(git status --porcelain --untracked-files=no)" ]; then

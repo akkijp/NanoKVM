@@ -132,3 +132,46 @@ func TestUpdateLockIsSharedThroughTheLockFile(t *testing.T) {
 	}
 	releaseUpdateLock()
 }
+
+func TestPreviewCannotBeEnabledAndReportsEffectiveValue(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := &Service{}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/preview", strings.NewReader(`{"enable":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	s.SetPreview(c)
+	if !strings.Contains(w.Body.String(), "disabled in this build") {
+		t.Fatalf("enabling preview must be refused, got %s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/application/preview", nil)
+	s.GetPreview(c)
+	if !strings.Contains(w.Body.String(), `"enabled":false`) {
+		t.Fatalf("preview must report false, got %s", w.Body.String())
+	}
+}
+
+func TestFailedRestartReleasesUpdateLock(t *testing.T) {
+	oldPath, oldCmd := updateLockPath, restartCommand
+	updateLockPath = filepath.Join(t.TempDir(), "update.lock")
+	restartCommand = []string{"false"}
+	defer func() { updateLockPath, restartCommand = oldPath, oldCmd }()
+
+	if !acquireUpdateLock() {
+		t.Fatal("could not take the update lock")
+	}
+	restartServices()
+
+	other, err := os.OpenFile(updateLockPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal("the maintenance updater still cannot take the lock after a failed restart")
+	}
+}

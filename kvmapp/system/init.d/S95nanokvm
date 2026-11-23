@@ -46,7 +46,7 @@ stop_process() {
 # akkijp fork: the microphone is off. The SoC's audio ADC is built into the
 # kernel, so unbind every sound card that has a capture device. Nothing in
 # NanoKVM records audio. Create /etc/kvm/enable-microphone to keep it on.
-# The result is in /run/nanokvm-microphone ("off", "on (enabled)" or
+# The result is in /run/nanokvm-microphone ("off", "on", "off (... reboot ...)" or
 # "FAILED: ..."), and a failure is also logged.
 capture_cards() {
     for pcm in /sys/class/sound/pcmC*D*c; do
@@ -58,7 +58,12 @@ capture_cards() {
 
 disable_audio_capture() {
     if [ -e /etc/kvm/enable-microphone ]; then
-        echo "on (enabled)" > /run/nanokvm-microphone
+        # An unbound card only comes back with the driver at boot.
+        if [ -n "$(capture_cards)" ]; then
+            echo "on" > /run/nanokvm-microphone
+        else
+            echo "off (enabled in /etc/kvm, reboot to turn it on)" > /run/nanokvm-microphone
+        fi
         return 0
     fi
     for card in $(capture_cards); do

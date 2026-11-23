@@ -43,12 +43,17 @@ func (s *Service) Update(c *gin.Context) {
 	go restartServices()
 }
 
+var restartCommand = []string{"/kvmapp/system/init.d/S95nanokvm", "restart"}
+
 func restartServices() {
 	// Let the HTTP response reach the client before stopping the server.
 	time.Sleep(1 * time.Second)
 
-	if err := exec.Command("/kvmapp/system/init.d/S95nanokvm", "restart").Run(); err != nil {
+	if err := exec.Command(restartCommand[0], restartCommand[1:]...).Run(); err != nil {
 		log.Errorf("failed to restart services after update: %v", err)
+		// akkijp fork: this process keeps running, so let other updates (including the
+		// maintenance updater, which shares the lock file) proceed.
+		releaseUpdateLock()
 	}
 }
 

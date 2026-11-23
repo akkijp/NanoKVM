@@ -107,10 +107,13 @@ release-build: check-root builder-image
 	@echo "Building release artifacts..."
 	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(IMAGE_NAME) /bin/bash -c '$(RELEASE_BUILD_CMD)'
 
-# Build the frontend (runs on the host; the builder image has no Node)
+# Build the frontend in the pinned node container (scripts/fork-env.sh; pnpm is pinned by
+# "packageManager" in web/package.json). The builder image has no Node.
 web:
 	@echo "Building web..."
-	@cd web && pnpm install --frozen-lockfile && pnpm build
+	@. scripts/fork-env.sh && docker run --rm -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
+		-v "$(PWD)/web:/w" -w /w "$$NODE_IMAGE" bash -euc \
+		'mkdir -p /tmp/bin && corepack enable --install-directory /tmp/bin && export PATH=/tmp/bin:$$PATH && pnpm install --frozen-lockfile && pnpm build'
 
 # Assemble the release package and its manifest
 package:

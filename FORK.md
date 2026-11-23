@@ -33,11 +33,7 @@
 
 ## ビルド
 
-ビルドは家の Proxmox の VM `nkbuild`（pvexf・VMID 214）で行う。上流の手順どおり:
-
-```bash
-make release VERSION=2.5.4.1
-```
+ビルドは家の Proxmox の VM `nkbuild`（pvexf・VMID 214）で行う。リリース用の成果物は下の「リリース」の `scripts/fork-release.sh` で作る（中で `make release` を呼ぶ。画面のビルドも固定した Node コンテナで行う）。
 
 成果物は `build/release/` の `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` の 3 つ。`scripts/verify-release-assets.sh build/release 2.5.4.1` で確かめる。
 ビルド環境は linux/amd64 だけ（ツールチェーンが x86-64 用のため）。
@@ -62,10 +58,12 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512>
 ```
 
-- まず新しい版を `/kvmapp.new` に置き、アプリに頼らない起動時の復旧台本（`/etc/init.d/S94nanokvm-update` と `/etc/kvm/update-confirm.py`）を入れる
-- 動いているアプリを止め、2 つのデーモンが消えたことを確かめる。止められなければ何も変えずに終わる（途中まで止まったら前の版を起こし直す）
-- アプリ（`/kvmapp` → `/root/old`）と、新しい版の初回起動が書き換える起動用ファイル（`/root/old-etc`。どの版のものかの印つき）を退避し、`/etc/kvm/update-pending` を書いてから入れ替える
-- 新しい版が上がらなければ（2 つのデーモンが動き続け、`server.yaml` の Web のポートが応答する、を 90 秒待つ）、両方を戻して前の版を起動し、失敗として終わる。戻すのは退避した起動用ファイルだけで、後から足したサービス（Tailscale など）は消さない
-- 入れ替えの途中で電源が落ちたり、初回起動で機器が再起動したりしたときは、次の起動で S94 が `/kvmapp` を戻し、同じ確認をして、だめなら戻す
-- 手で戻すときは `python3 /etc/kvm/update-nanokvm.py --rollback`（ドライバーが変わっていたら再起動する）。画面の更新で `/root/old` が別の版に替わっていたら、起動用ファイルと組が合わないので何もせずに断る
+入れ方は上流の画面の更新と同じ（`/kvmapp` を `/root/old` に退避して新しい版と入れ替え、起動し直す。新しい版の初回起動が `/etc` の起動用ファイルを入れ替える）。そのうえで:
+
+- 新しい版を展開・確認して `/kvmapp.new` に置くまでは何も止めない
+- 止めた後、2 つのデーモンが消えたことを確かめてから入れ替える。止められなければ何も変えずに終わる。入れ替えに失敗したら前の版を `/kvmapp` に戻して起動する
+- 新しい版のデーモンが動き続けなければ、失敗（終了コード 1）として知らせる
+
+自動では戻さない。戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。
+
 2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`（フォークの Releases から取る）で入る。

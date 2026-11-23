@@ -16,6 +16,11 @@ import (
 func (s *Service) StartRuntime(c *gin.Context) {
 	defer s.recoverRuntimeHandler(c, "start")
 	s.ensureDependencies()
+	// akkijp fork: refuse before any runtime state changes, so the UI never shows "starting".
+	if runtimeDisabledByFork {
+		writePicoclawErrorWithData(c, newPicoclawError(CodeRuntimeStartFailed, runtimeDisabledMessage), gin.H{"status": s.runtimeStatus()})
+		return
+	}
 	log.Info("picoclaw runtime start requested")
 
 	// Lock order: hold a stable PicoClaw control lease before entering the
@@ -236,6 +241,10 @@ func (s *Service) safeRuntimeStatusForRecovery() (status RuntimeStatus) {
 
 func (s *Service) InstallRuntime(c *gin.Context) {
 	s.ensureDependencies()
+	if runtimeDisabledByFork {
+		writePicoclawErrorWithData(c, newPicoclawError(CodeRuntimeUnavailable, runtimeDisabledMessage), gin.H{"status": s.runtimeStatus()})
+		return
+	}
 	output, err := s.installRuntime()
 	if err != nil {
 		writePicoclawError(c, err)
