@@ -50,7 +50,7 @@ echo "== Go"
 
 echo "== kvm_system record parser (C++)"
 "${RUN[@]}" "$GO_IMAGE" sh -euc '
-  g++ -std=c++11 -Wall -Werror -o /tmp/pending_record_test /src/support/sg2002/kvm_system/main/lib/system_init/pending_record_test.cpp
+  g++ -std=c++11 -Wall -Werror -I /src/support/sg2002/kvm_system/main/lib/system_init -o /tmp/pending_record_test /src/scripts/tests/pending_record_test.cpp
   /tmp/pending_record_test
 '
 

@@ -906,9 +906,11 @@ class UpdateScriptTest(unittest.TestCase):
         probe.write_text("int main() { return 0; }\n")
         if subprocess.run([compiler, str(probe), "-o", str(self.base / "probe")], capture_output=True).returncode != 0:
             self.skipTest("the C++ compiler here cannot link a program")
-        source = SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/pending_record_test.cpp"
+        source = pathlib.Path(__file__).resolve().parent / "pending_record_test.cpp"
+        include = SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init"
         binary = self.base / "pending_record_test"
-        built = subprocess.run([compiler, "-std=c++11", "-o", str(binary), str(source)], capture_output=True, text=True)
+        built = subprocess.run([compiler, "-std=c++11", "-I", str(include), "-o", str(binary), str(source)],
+                               capture_output=True, text=True)
         self.assertEqual(built.returncode, 0, built.stderr)
         result = subprocess.run([str(binary)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout)

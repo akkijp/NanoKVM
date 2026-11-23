@@ -1,5 +1,7 @@
-// akkijp fork: tests for pending_record.h. Built and run by scripts/fork-test.sh:
-//   g++ -std=c++11 -o /tmp/pending_record_test pending_record_test.cpp && /tmp/pending_record_test
+// akkijp fork: tests for support/sg2002/kvm_system/main/lib/system_init/pending_record.h.
+// Kept out of lib/system_init, whose every .cpp is compiled into kvm_system. Built and run by
+// scripts/fork-test.sh:
+//   g++ -std=c++11 -I support/sg2002/kvm_system/main/lib/system_init -o /tmp/t scripts/tests/pending_record_test.cpp
 #include "pending_record.h"
 
 #include <stdio.h>
