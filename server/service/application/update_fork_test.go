@@ -59,11 +59,28 @@ func TestExtractedPackageNeedsEveryMigrationFile(t *testing.T) {
 	}
 }
 
+func TestRequiredLibrariesMatchServerDlLib(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "..", "dl_lib"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tracked []string
+	for _, entry := range entries {
+		tracked = append(tracked, entry.Name())
+	}
+	if strings.Join(tracked, ",") != strings.Join(requiredRuntimeLibraries, ",") {
+		t.Fatalf("requiredRuntimeLibraries = %v, server/dl_lib has %v", requiredRuntimeLibraries, tracked)
+	}
+}
+
 func TestShippedAppHasEveryRequiredFile(t *testing.T) {
 	for _, file := range requiredPackageFiles {
 		switch file {
-		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system", "server/dl_lib/libkvm.so", "server/dl_lib/libkvm_mmf.so", "server/web/index.html":
+		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system", "server/web/index.html":
 			continue // produced by the build
+		}
+		if strings.HasPrefix(file, "server/dl_lib/") {
+			continue // checked against server/dl_lib by TestRequiredLibrariesMatchServerDlLib
 		}
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "kvmapp", filepath.FromSlash(file))); err != nil {
 			t.Errorf("kvmapp/%s is required in packages but missing from the repository", file)

@@ -99,11 +99,50 @@ REQUIRED_FILES = (
     "system/init.d/S50sshd",
     "system/init.d/S98tailscaled",
     "system/ko/soph_mipi_rx.ko",
-    # The server cannot start without its video library, and the web UI needs its page.
-    "server/dl_lib/libkvm.so",
-    "server/dl_lib/libkvm_mmf.so",  # NEEDED by libkvm.so
+    # The web UI needs its page.
     "server/web/index.html",
-)
+) + tuple(f"server/dl_lib/{lib}" for lib in (
+    # Runtime libraries of the server (libkvm.so and what it loads). package.sh ships every one of
+    # them; keep in sync with server/dl_lib/ and archive.go (a test checks both).
+    "libaaccomm2.so",
+    "libaacdec2.so",
+    "libaacenc2.so",
+    "libaacsbrdec2.so",
+    "libaacsbrenc2.so",
+    "libae.so",
+    "libaf.so",
+    "libawb.so",
+    "libcli.so",
+    "libcvi_RES1.so",
+    "libcvi_VoiceEngine.so",
+    "libcvi_audio.so",
+    "libcvi_bin.so",
+    "libcvi_bin_isp.so",
+    "libcvi_ispd2.so",
+    "libcvi_ive.so",
+    "libcvi_ssp.so",
+    "libcvi_vqe.so",
+    "libdnvqe.so",
+    "libini.so",
+    "libisp.so",
+    "libisp_algo.so",
+    "libjson-c.so.5",
+    "libkvm.so",
+    "libkvm_mmf.so",
+    "libmipi_tx.so",
+    "libmisc.so",
+    "libopencv_core.so.409",
+    "libopencv_highgui.so.409",
+    "libopencv_imgcodecs.so.409",
+    "libopencv_imgproc.so.409",
+    "libosdc.so",
+    "libraw_dump.so",
+    "libsys.so",
+    "libtinyalsa.so",
+    "libvdec.so",
+    "libvenc.so",
+    "libvpu.so",
+))
 
 # The migration replaces the HDMI driver and reboots unless the installed one is
 # current. Keep in sync with new_app_init() in
@@ -349,6 +388,21 @@ def microphone_status() -> str:
         return ""
 
 
+def restart_previous(script: str) -> str:
+    """Start the previous version again after a failed step and describe the outcome.
+    Its init script fails when only the microphone could not be disabled, so the daemons are
+    checked on their own."""
+    status = service(script, "restart")
+    if not started():
+        return "the previous version did not start again either"
+    mic = microphone_status()
+    if mic.startswith("FAILED"):
+        return f"the previous version is running again, but its microphone could not be disabled ({mic})"
+    if status != 0:
+        return "the previous version is running again, but its init script reported a failure"
+    return "the previous version was started again"
+
+
 def started() -> bool:
     """Both daemons come up within START_TIMEOUT and are still running START_STABLE seconds later."""
     deadline = time.monotonic() + START_TIMEOUT
@@ -422,11 +476,13 @@ def stop_old() -> None:
             return
     # A partial stop can leave the web server down. Bring the old version back up.
     if not all(running(d) for d in DAEMONS):
-        if service(STOP_SCRIPT, "restart") != 0 or not started():
+        outcome = restart_previous(STOP_SCRIPT)
+        if outcome.endswith("either"):
             raise UpdateError(
                 "could not stop the nanokvm service, and after the partial stop it did not come back "
                 "up. Nothing was installed; restart it with /etc/init.d/S95nanokvm restart or reboot"
             )
+        raise UpdateError(f"could not stop the nanokvm service; nothing was installed, and {outcome}")
     raise UpdateError("could not stop the nanokvm service; nothing was changed")
 
 
@@ -439,10 +495,14 @@ def prepare(source_dir: str) -> None:
 
 
 def remove_stage_mark() -> None:
-    """After the switch the mark is inside /kvmapp; it is harmless there, but tidy it up."""
+    """After the switch the mark is inside /kvmapp; it is harmless there, but tidy it up.
+    A failure here must not keep the new version from being started."""
     mark = os.path.join(APP_DIR, STAGE_MARK_NAME)
-    if os.path.exists(mark):
-        os.remove(mark)
+    try:
+        if os.path.exists(mark):
+            os.remove(mark)
+    except OSError as e:
+        say(f"warning: could not remove {mark}: {e}", err=True)
 
 
 def drop_stage() -> None:
@@ -465,6 +525,29 @@ def switch() -> None:
         raise
 
 
+MOUNTS = "/proc/mounts"
+
+
+def mount_points() -> list:
+    try:
+        with open(MOUNTS) as f:
+            # Spaces in mount points are written as \040.
+            return [line.split()[1].replace("\\040", " ") for line in f if len(line.split()) > 1]
+    except OSError:
+        return []
+
+
+def check_backup_removable() -> None:
+    """The switch deletes the previous /root/old. Refuse if that would delete across a mount
+    (e.g. a backup disk mounted there) or follow a link."""
+    if not os.path.lexists(BACKUP_DIR):
+        return
+    real = os.path.realpath(BACKUP_DIR)
+    if os.path.islink(BACKUP_DIR) or os.path.ismount(BACKUP_DIR) or any(
+            m == real or m.startswith(real + "/") for m in mount_points()):
+        raise UpdateError(f"{BACKUP_DIR} is a link or has a mount in it; nothing was changed")
+
+
 def check_same_filesystem() -> None:
     """The switch renames /kvmapp to /root/old and /kvmapp.new to /kvmapp; renames do not
     cross filesystems. The web updater refuses this layout too (ensureInstallFilesystem)."""
@@ -477,6 +560,7 @@ def check_same_filesystem() -> None:
 def install(source_dir: str, version: str) -> None:
     check_not_interrupted()
     check_same_filesystem()
+    check_backup_removable()
     reboots = migration_reboots()
     prepare(source_dir)
     if os.path.lexists(STAGE_DIR):
@@ -505,12 +589,13 @@ def switch_and_start(version: str, reboots: bool) -> None:
         switch()
     except Exception as e:
         drop_stage()
-        if service(app_script(), "restart") == 0 and started():
-            raise UpdateError(f"could not put the new version in place; the previous version was started again: {e}")
-        raise UpdateError(
-            f"could not put the new version in place ({e}), and the previous version did not start "
-            "again either. Recover as described in FORK.md"
-        )
+        outcome = restart_previous(app_script())
+        if outcome.endswith("either"):
+            raise UpdateError(
+                f"could not put the new version in place ({e}), and the previous version did not start "
+                "again either. Recover as described in FORK.md"
+            )
+        raise UpdateError(f"could not put the new version in place; {outcome}: {e}")
     remove_stage_mark()
     os.sync()
 

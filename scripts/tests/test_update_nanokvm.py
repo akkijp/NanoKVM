@@ -52,6 +52,8 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
         self.u.MIC_STATUS = str(self.base / "mic-status")
+        self.u.MOUNTS = str(self.base / "mounts")
+        pathlib.Path(self.u.MOUNTS).write_text("")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
         self.real_migration_reboots = self.u.migration_reboots
@@ -234,7 +236,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.running = lambda name: name != "NanoKVM-Server"
         self.u.stopped = lambda: False
         path, digest = self.package("2.5.4.1")
-        self.assert_rejected("nothing was changed", file=path, sha512=digest)
+        self.assert_rejected("previous version was started again", file=path, sha512=digest)
         self.assertEqual(log.read_text().split(), ["stop", "stop", "stop", "restart"])
 
     def test_partial_stop_that_does_not_recover_is_reported(self):
@@ -244,11 +246,14 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.assert_rejected("did not come back up", file=path, sha512=digest)
 
-    def test_partial_stop_whose_restart_fails_is_reported(self):
+    def test_partial_stop_whose_restart_script_fails_is_reported(self):
         write_script(pathlib.Path(self.u.STOP_SCRIPT), FAIL_SCRIPT)
         self.u.running = lambda name: name != "NanoKVM-Server"
         self.u.stopped = lambda: False
         path, digest = self.package("2.5.4.1")
+        # The daemons are up again, but the init script failed: both facts are reported.
+        self.assert_rejected("running again, but its init script reported a failure", file=path, sha512=digest)
+        self.u.started = lambda: False
         self.assert_rejected("did not come back up", file=path, sha512=digest)
 
     def test_stale_stage_is_removed_before_unpacking(self):
@@ -353,6 +358,58 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assert_unchanged()
         self.assertEqual(self.calls(), "")  # not even a stop
+
+    def test_backup_with_a_mount_inside_is_not_deleted(self):
+        old = pathlib.Path(self.u.BACKUP_DIR)
+        (old / "disk").mkdir(parents=True)
+        (old / "version").write_text("2.4.2\n")
+        (old / "disk/important").write_text("x")
+        pathlib.Path(self.u.MOUNTS).write_text(f"/dev/sda1 {os.path.realpath(old)}/disk ext4 rw 0 0\n")
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("has a mount in it", file=path, sha512=digest)
+        self.assertTrue((old / "disk/important").exists())
+        self.assertEqual(self.calls(), "")
+
+    def test_backup_that_is_a_link_is_not_followed(self):
+        target = self.base / "elsewhere"
+        target.mkdir()
+        (target / "version").write_text("2.4.2\n")
+        os.symlink(target, self.u.BACKUP_DIR)
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("is a link", file=path, sha512=digest)
+        self.assertTrue((target / "version").exists())
+
+    def test_failing_to_remove_the_stage_mark_still_starts_the_new_version(self):
+        real_remove = os.remove
+
+        def remove(path, *a, **kw):
+            if path.endswith(self.u.STAGE_MARK_NAME):
+                raise OSError("read-only")
+            real_remove(path, *a, **kw)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.remove = remove
+        self.u.os.path = os.path
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertTrue(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
+
+    def test_previous_version_back_with_microphone_on_is_described(self):
+        real_rename = os.rename
+
+        def rename(src, dst):
+            if src == self.u.STAGE_DIR:
+                raise OSError("no space left")
+            real_rename(src, dst)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.rename = rename
+        self.u.os.path = os.path
+        # The previous (fork) version runs again, but its microphone could not be disabled.
+        write_script(pathlib.Path(self.u.APP_DIR) / "system/init.d/S95nanokvm",
+                     f"#!/bin/sh\necho 'FAILED: capture still present on card 0' > {self.base}/mic-status\nexit 1\n".encode())
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("running again, but its microphone could not be disabled", file=path, sha512=digest)
 
     def test_microphone_left_on_is_reported(self):
         # The new S95 records that the microphone could not be disabled, but the KVM runs.
@@ -820,6 +877,20 @@ reboot() {{ record reboot; }}
                 first_daemon = min(order.index("daemon-kvm_system"), order.index("daemon-NanoKVM-Server"))
                 self.assertLess(order.index("mic"), first_daemon)
                 self.assertLess(order.index("picoclaw"), first_daemon)
+
+    def test_start_while_running_still_reports_the_microphone(self):
+        log = self.base / "order.log"
+        text = S95.read_text()
+        start_services = s95_function("start_services")
+        script = f"""
+disable_audio_capture() {{ return 1; }}
+disable_picoclaw() {{ :; }}
+pidof() {{ return 0; }}
+{start_services}
+start_services
+"""
+        result = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
 
     def test_microphone_failure_fails_the_start_but_the_kvm_runs(self):
         for action in ("start", "restart"):

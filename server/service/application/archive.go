@@ -217,7 +217,55 @@ var requiredPackageFiles = []string{
 	"system/init.d/S50sshd",
 	"system/init.d/S98tailscaled",
 	"system/ko/soph_mipi_rx.ko",
-	"server/dl_lib/libkvm.so",
-	"server/dl_lib/libkvm_mmf.so", // NEEDED by libkvm.so
 	"server/web/index.html",
+}
+
+// requiredRuntimeLibraries are the server's libraries (libkvm.so and everything it loads). Every
+// package ships all of them (scripts/package.sh backfills from server/dl_lib), so a package missing
+// one would leave the server unable to start. Keep in sync with server/dl_lib/ (a test checks it).
+var requiredRuntimeLibraries = []string{
+	"libaaccomm2.so",
+	"libaacdec2.so",
+	"libaacenc2.so",
+	"libaacsbrdec2.so",
+	"libaacsbrenc2.so",
+	"libae.so",
+	"libaf.so",
+	"libawb.so",
+	"libcli.so",
+	"libcvi_RES1.so",
+	"libcvi_VoiceEngine.so",
+	"libcvi_audio.so",
+	"libcvi_bin.so",
+	"libcvi_bin_isp.so",
+	"libcvi_ispd2.so",
+	"libcvi_ive.so",
+	"libcvi_ssp.so",
+	"libcvi_vqe.so",
+	"libdnvqe.so",
+	"libini.so",
+	"libisp.so",
+	"libisp_algo.so",
+	"libjson-c.so.5",
+	"libkvm.so",
+	"libkvm_mmf.so",
+	"libmipi_tx.so",
+	"libmisc.so",
+	"libopencv_core.so.409",
+	"libopencv_highgui.so.409",
+	"libopencv_imgcodecs.so.409",
+	"libopencv_imgproc.so.409",
+	"libosdc.so",
+	"libraw_dump.so",
+	"libsys.so",
+	"libtinyalsa.so",
+	"libvdec.so",
+	"libvenc.so",
+	"libvpu.so",
+}
+
+func init() {
+	for _, lib := range requiredRuntimeLibraries {
+		requiredPackageFiles = append(requiredPackageFiles, "server/dl_lib/"+lib)
+	}
 }
