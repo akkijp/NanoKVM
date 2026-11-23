@@ -3,7 +3,9 @@ package application
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -755,5 +757,95 @@ func TestOfflineUpdateWithWrongSHA256ChangesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(restartPendingPath); err == nil {
 		t.Fatal("a record was written")
+	}
+}
+
+func TestInstallRefusesWhenTheInstalledVersionCannotBeRead(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash := restartPendingPath, installAppDir, installBackupDir, installTrashDir
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
+	})
+	// "version" is a directory: reading it fails with an error other than "does not exist".
+	for _, d := range []string{filepath.Join(installAppDir, "version"), filepath.Join(installBackupDir, "server"), filepath.Join(dir, "new")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new", "version"), []byte("2.5.4.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "cannot read the installed version") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installBackupDir, "server")); err != nil {
+		t.Fatal("the previous backup was removed")
+	}
+}
+
+func TestVersionAPITrimsLikeThePackageCheck(t *testing.T) {
+	dir := usePendingTestPaths(t)
+	oldApp := installAppDir
+	installAppDir = filepath.Join(dir, "kvmapp")
+	t.Cleanup(func() { installAppDir = oldApp })
+	if err := os.MkdirAll(installAppDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePending(pendingRecord{From: "2.5.4", To: "2.5.4.1", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"current":"2.5.4.1"`) {
+		t.Fatalf("a CRLF version file must read as 2.5.4.1: %s", body)
+	}
+}
+
+func TestRestartUnderWayIsNotOfferedForRetry(t *testing.T) {
+	usePendingTestPaths(t)
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	processStart = time.Now().Add(-time.Hour) // this server predates the record
+	t.Cleanup(func() { processStart = time.Now(); setRestartUnderWay(false) })
+	setRestartUnderWay(true)
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"restarting"`) {
+		t.Fatalf("version while the restart is under way: %s", body)
+	}
+	setRestartUnderWay(false) // the restart command failed
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"installed"`) {
+		t.Fatalf("version after a failed restart: %s", body)
+	}
+}
+
+func TestUpdateInstallsOnlyTheVersionTheUserSaw(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	usePendingTestPaths(t)
+	manifest, _ := json.Marshal(Latest{
+		ManifestVersion: 2, Version: "2.5.4.3", Name: "nanokvm_2.5.4.3.tar.gz",
+		Sha512: base64.StdEncoding.EncodeToString(make([]byte, 64)), LegacySize: 1, SizeBytes: 1, UnpackedSizeBytes: 1,
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(manifest)
+	}))
+	defer server.Close()
+	oldBase := updateBaseURL
+	updateBaseURL = server.URL
+	t.Cleanup(func() { updateBaseURL = oldBase })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", strings.NewReader(`{"version":"2.5.4.2"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	(&Service{}).Update(c)
+	if !strings.Contains(w.Body.String(), `"code":-5`) || !strings.Contains(w.Body.String(), "2.5.4.3 is now the latest") {
+		t.Fatalf("update with a stale version: %s", w.Body.String())
+	}
+	if !lockIsFree() {
+		t.Fatal("the lock was not released")
 	}
 }

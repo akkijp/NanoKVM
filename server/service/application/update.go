@@ -3,6 +3,7 @@ package application
 import (
 	"crypto/sha512"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,12 +36,22 @@ func (s *Service) Update(c *gin.Context) {
 		return
 	}
 
-	if err := update(); err != nil {
+	// akkijp fork: the version the user saw on the page; the update installs only that one.
+	var req struct {
+		Version string `json:"version"`
+	}
+	_ = c.ShouldBindJSON(&req) // optional: older pages send no body
+	if err := update(req.Version); err != nil {
 		releaseUpdateLock()
+		if errors.Is(err, errLatestChanged) {
+			rsp.ErrRsp(c, -5, err.Error())
+			return
+		}
 		rsp.ErrRsp(c, -1, fmt.Sprintf("update failed: %s", err))
 		return
 	}
 
+	setRestartUnderWay(true)
 	rsp.OkRsp(c)
 	log.Debugf("update application success")
 
@@ -58,16 +69,22 @@ func restartServices() {
 
 	if err := exec.Command(restartCommand[0], restartCommand[1:]...).Run(); err != nil {
 		log.Errorf("failed to restart services after update: %v", err)
+		setRestartUnderWay(false) // the UI now offers to retry
 		// akkijp fork: this process keeps running, so let other updates (including the
 		// maintenance updater, which shares the lock file) proceed; they retry the restart.
 		releaseUpdateLock()
 	}
 }
 
-func update() error {
+var errLatestChanged = errors.New("the latest version changed")
+
+func update(expected string) error {
 	latest, err := getLatest()
 	if err != nil {
 		return err
+	}
+	if expected != "" && latest.Version != expected {
+		return fmt.Errorf("%w: %s is now the latest, not %s; check again", errLatestChanged, latest.Version, expected)
 	}
 	if err := prepareCacheForUpdate(); err != nil {
 		return err

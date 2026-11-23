@@ -52,9 +52,9 @@ func (s *Service) GetVersion(c *gin.Context) {
 	// current version
 	currentVersion := "1.0.0"
 
-	versionFile := fmt.Sprintf("%s/version", AppDir)
+	versionFile := fmt.Sprintf("%s/version", installAppDir)
 	if version, err := os.ReadFile(versionFile); err == nil {
-		currentVersion = strings.ReplaceAll(string(version), "\n", "")
+		currentVersion = strings.TrimSpace(string(version)) // akkijp fork: as the package check does (CRLF too)
 	}
 
 	log.Debugf("current version: %s", currentVersion)

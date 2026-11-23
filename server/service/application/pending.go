@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,7 +49,28 @@ const (
 	phaseConfirming = "confirming"
 	// Reported only: "switching" while an update holds the update lock.
 	phaseUpdating = "updating"
+	// Reported only: "installed" while this server has a restart under way (it has not failed).
+	phaseRestarting = "restarting"
 )
+
+// restartUnderWay is set from the moment an update or retry has been accepted until the restart
+// command fails; a successful restart ends this process, and with it the flag.
+var (
+	restartUnderWayMu sync.Mutex
+	restartUnderWay   bool
+)
+
+func setRestartUnderWay(v bool) {
+	restartUnderWayMu.Lock()
+	restartUnderWay = v
+	restartUnderWayMu.Unlock()
+}
+
+func isRestartUnderWay() bool {
+	restartUnderWayMu.Lock()
+	defer restartUnderWayMu.Unlock()
+	return restartUnderWay
+}
 
 // updateInProgress reports whether an update (in this process, or update-nanokvm.py, which
 // shares the lock file) is running right now.
@@ -86,7 +108,10 @@ func reportedPhase(record pendingRecord) string {
 		time.Since(processStart) < confirmDeadline {
 		return phaseConfirming
 	}
-	return phaseInstalled
+	if isRestartUnderWay() {
+		return phaseRestarting // this (old) server is about to be restarted
+	}
+	return phaseInstalled // the restart failed: it can be retried
 }
 
 func readMicrophoneStatus() string {
@@ -182,6 +207,18 @@ func clearPending() error {
 	return nil
 }
 
+// readVersionFileStrict tells a missing version file ("", nil) from one that cannot be read.
+func readVersionFileStrict(dir string) (string, error) {
+	data, err := os.ReadFile(dir + "/version")
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func readVersionFile(dir string) string {
 	data, err := os.ReadFile(dir + "/version")
 	if err != nil {
@@ -229,6 +266,7 @@ func (s *Service) RetryRestart(c *gin.Context) {
 		rsp.OkRspWithData(c, gin.H{"restarting": false})
 	default:
 		log.Infof("retrying the restart into %s", record.To)
+		setRestartUnderWay(true)
 		rsp.OkRspWithData(c, gin.H{"restarting": true})
 		go restartServices()
 	}

@@ -12,10 +12,12 @@ export function getVersion() {
 }
 
 // update application to latest version
-export function update() {
+// akkijp fork: the version shown on the page; the server installs only that one.
+export function update(version: string) {
   return http.request({
     method: 'post',
     url: '/api/application/update',
+    data: { version },
     timeout: 15 * 60 * 1000
   });
 }

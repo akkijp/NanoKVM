@@ -61,7 +61,11 @@ func releaseUpdateLock() {
 func installPreparedPackage(sourceDir string) error {
 	// akkijp fork: from here until the new version is seen running, /root/old is the version
 	// known to work. Record that before touching anything; no record, no switch (pending.go).
-	record := pendingRecord{From: readVersionFile(installAppDir), To: readVersionFile(sourceDir), Phase: phaseSwitching}
+	previous, err := readVersionFileStrict(installAppDir)
+	if err != nil {
+		return fmt.Errorf("cannot read the installed version (%w); nothing was changed", err)
+	}
+	record := pendingRecord{From: previous, To: readVersionFile(sourceDir), Phase: phaseSwitching}
 	// Both go into the record, which S95nanokvm and kvm_system parse strictly: refuse anything
 	// they would not accept, before anything changes.
 	if record.From != "" && !previousVersionPattern.MatchString(record.From) { // empty: no version file

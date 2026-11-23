@@ -953,7 +953,18 @@ def acquire_lock():
     return lock
 
 
+def check_arguments(args) -> None:
+    """An option given with an empty value (e.g. --file "$PACKAGE" with PACKAGE unset) is an
+    error, never the same as leaving it out: otherwise an empty --file would download the latest
+    release, and an empty --sha512 would trust latest.json."""
+    for name in ("file", "sha512", "version"):
+        value = getattr(args, name)
+        if value is not None and not value.strip():
+            raise UpdateError(f"--{name.replace('_', '-')} was given an empty value")
+
+
 def run(args) -> str:
+    check_arguments(args)
     if args.file and os.path.realpath(args.file).startswith(os.path.realpath(WORK_PARENT) + os.sep):
         raise UpdateError(f"{args.file} is inside {WORK_PARENT}, which is cleaned up; copy it elsewhere first")
     lock = acquire_lock()
@@ -999,7 +1010,7 @@ def run_locked(args, work: str) -> str:
             raise UpdateError("invalid --version")
         manifest = fetch_manifest(args.version, work)
         version = manifest["version"]
-        expected = parse_digest(args.sha512 or manifest["sha512"])
+        expected = parse_digest(args.sha512 if args.sha512 is not None else manifest["sha512"])
         package = os.path.join(work, manifest["name"])
         size = manifest["size_bytes"]
         unpacked_size = manifest["unpacked_size_bytes"]

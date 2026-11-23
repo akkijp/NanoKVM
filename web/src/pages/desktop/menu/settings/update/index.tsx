@@ -70,8 +70,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             window.location.reload(); // the target version runs and has settled
             return;
           }
-          if (pending && rsp.data.restartPhase === 'switching') {
-            // Stopped half-way (not in progress): manual recovery; fall through to show it.
+          if (pending && (rsp.data.restartPhase === 'switching' || rsp.data.restartPhase === 'installed')) {
+            // Stopped half-way (manual recovery) or the restart failed (retry): stop watching and
+            // fall through to show it, with the settings unlocked.
             reloadWhenSettledRef.current = false;
           } else if (Date.now() >= watchUntilRef.current) {
             stopWatching(t('settings.update.unconfirmed'));
@@ -190,6 +191,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // HDMI driver or init script). Watch the version API until it answers again and the update has
   // settled, then reload; never reload into a page that cannot load.
   function watchRestart(target: string) {
+    // A reply that arrives after the tab was closed must not lock the settings again.
+    if (!mountedRef.current) return;
     watchTargetRef.current = target;
     setIsLocked(true);
     setStatus('updating');
@@ -206,8 +209,14 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     setStatus('updating');
 
     api
-      .update()
+      .update(latestVersion)
       .then((rsp: any) => {
+        if (rsp.code === -5) {
+          // A newer release appeared since the page was loaded: show it before updating.
+          setIsLocked(false);
+          checkForUpdates();
+          return;
+        }
         if (rsp.code !== 0) {
           setIsLocked(false);
           setStatus('failed');

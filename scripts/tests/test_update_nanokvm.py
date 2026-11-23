@@ -699,6 +699,13 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assertFalse(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
 
+    def test_empty_arguments_are_errors_not_omissions(self):
+        path, digest = self.package("2.5.4.1")
+        for kw in ({"file": "", "sha512": digest}, {"file": path, "sha512": ""}, {"version": ""},
+                   {"sha512": "", "dry_run": True}):
+            with self.subTest(kw=kw):
+                self.assert_rejected("empty value", **kw)
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)

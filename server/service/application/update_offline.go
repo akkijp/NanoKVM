@@ -38,6 +38,7 @@ func (s *Service) OfflineUpdate(c *gin.Context) {
 		return
 	}
 
+	setRestartUnderWay(true)
 	rsp.OkRsp(c)
 	log.Debugf("offline update application success")
 
