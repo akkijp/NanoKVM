@@ -41,6 +41,12 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
         setCurrentVersion(rsp.data.current);
 
+        // akkijp fork: an installed update waits for its restart; offer to retry it.
+        if (rsp.data.restartPending) {
+          setStatus('restartPending');
+          return;
+        }
+
         if (rsp.data?.latest) {
           setLatestVersion(rsp.data.latest);
           const versionState = versionStatus(rsp.data.current, rsp.data.latest);
@@ -65,7 +71,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   }
 
   function update() {
-    if (status !== 'outdated') return;
+    // While a restart is pending the server retries only that restart.
+    if (status !== 'outdated' && status !== 'restartPending') return;
 
     setIsLocked(true);
     setStatus('updating');
@@ -125,6 +132,19 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             extra={[
               <Button key="confirm" onClick={checkForUpdates}>
                 {t('settings.update.title')}
+              </Button>
+            ]}
+          />
+        )}
+
+        {status === 'restartPending' && (
+          <Result
+            status="warning"
+            title={currentVersion}
+            subTitle={t('settings.update.restartPending')}
+            extra={[
+              <Button key="retry" type="primary" onClick={update}>
+                {t('settings.update.retryRestart')}
               </Button>
             ]}
           />

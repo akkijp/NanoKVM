@@ -179,15 +179,16 @@ func TestFailedRestartReleasesUpdateLock(t *testing.T) {
 
 func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	oldPath, oldCmd, oldDelay := updateLockPath, restartCommand, restartDelay
+	oldPath, oldCmd, oldDelay, oldPending := updateLockPath, restartCommand, restartDelay, restartPendingPath
 	dir := t.TempDir()
 	updateLockPath = filepath.Join(dir, "update.lock")
+	restartPendingPath = filepath.Join(dir, "restart-pending")
 	restartCommand = []string{"false"}
 	restartDelay = 0
-	defer func() {
-		updateLockPath, restartCommand, restartDelay = oldPath, oldCmd, oldDelay
-		setRestartPending(false)
-	}()
+	t.Cleanup(func() {
+		releaseUpdateLock()
+		updateLockPath, restartCommand, restartDelay, restartPendingPath = oldPath, oldCmd, oldDelay, oldPending
+	})
 
 	if !acquireUpdateLock() {
 		t.Fatal("could not take the update lock")
@@ -196,32 +197,37 @@ func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
 	if !isRestartPending() {
 		t.Fatal("a failed restart must be remembered")
 	}
+	if _, err := os.Stat(restartPendingPath); err != nil {
+		t.Fatal("the pending restart must be visible to the maintenance updater")
+	}
+
+	// The version query tells the UI.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/application/version", nil)
+	(&Service{}).GetVersion(c)
+	if !strings.Contains(w.Body.String(), `"restartPending":true`) {
+		t.Fatalf("version during a pending restart: %s", w.Body.String())
+	}
 
 	// A new update request retries the restart and installs nothing.
 	marker := filepath.Join(dir, "restarted")
-	restartCommand = []string{"touch", marker}
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
+	restartCommand = []string{"sh", "-c", "touch " + marker + "; exit 1"} // still failing, so the lock is released
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", nil)
 	(&Service{}).Update(c)
 	if !strings.Contains(w.Body.String(), "not running yet") {
 		t.Fatalf("update during a pending restart: %s", w.Body.String())
 	}
-	for i := 0; i < 100; i++ {
-		if _, err := os.Stat(marker); err == nil {
-			break
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil && acquireUpdateLock() {
+			break // the retry ran and, having failed, released the lock
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the restart was not retried")
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatal("the restart was not retried")
-	}
-
-	w = httptest.NewRecorder()
-	c, _ = gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/application/version", nil)
-	(&Service{}).GetVersion(c)
-	if !strings.Contains(w.Body.String(), "waiting for its restart") {
-		t.Fatalf("version during a pending restart: %s", w.Body.String())
 	}
 }

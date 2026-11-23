@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -51,24 +50,27 @@ var (
 	restartCommand = []string{"/kvmapp/system/init.d/S95nanokvm", "restart"}
 	restartDelay   = 1 * time.Second
 
-	// akkijp fork: set when an update was put in /kvmapp but the restart into it failed, so this
-	// (old) process is still the one running. /kvmapp/version then names a version that is not
-	// running, and /root/old holds the only version known to work: no new install may happen
-	// until the restart has been retried.
-	restartPendingMu sync.Mutex
-	restartPending   bool
+	// akkijp fork: exists while an update is in /kvmapp but the restart into it has not happened,
+	// so an old process is still the one running. /kvmapp/version then names a version that is not
+	// running, and /root/old holds the only version known to work: neither this server nor
+	// kvmapp/system/update-nanokvm.py may install anything until the restart has happened.
+	// S95nanokvm removes it once it has started the daemons; /run is empty after a reboot.
+	restartPendingPath = "/run/nanokvm-restart-pending"
 )
 
 func isRestartPending() bool {
-	restartPendingMu.Lock()
-	defer restartPendingMu.Unlock()
-	return restartPending
+	_, err := os.Stat(restartPendingPath)
+	return err == nil
 }
 
 func setRestartPending(pending bool) {
-	restartPendingMu.Lock()
-	defer restartPendingMu.Unlock()
-	restartPending = pending
+	if !pending {
+		_ = os.Remove(restartPendingPath)
+		return
+	}
+	if err := os.WriteFile(restartPendingPath, []byte("restart pending\n"), 0o644); err != nil {
+		log.Errorf("failed to record the pending restart: %v", err)
+	}
 }
 
 func restartServices() {

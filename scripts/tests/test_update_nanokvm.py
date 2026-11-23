@@ -52,6 +52,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
         self.u.MIC_STATUS = str(self.base / "mic-status")
+        self.u.RESTART_PENDING = str(self.base / "restart-pending")
         self.u.MOUNTS = str(self.base / "mounts")
         pathlib.Path(self.u.MOUNTS).write_text("")
         self.u.stopped = lambda: True
@@ -418,6 +419,20 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.assert_rejected("running again, but its microphone could not be disabled", file=path, sha512=digest)
 
+    def test_web_update_waiting_for_restart_blocks_install(self):
+        self.complete_app(self.u.BACKUP_DIR)  # the version known to work
+        pathlib.Path(self.u.RESTART_PENDING).write_text("")
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "has not restarted into it"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.2")
+        self.assertEqual(self.calls(), "")
+
+    def test_running_kvm_with_failed_init_script_is_not_called_a_failed_start(self):
+        path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
+        with self.assertRaisesRegex(self.u.UpdateError, "installed and running, but its init script"):
+            self.run_update(file=path, sha512=digest)
+
     def test_microphone_left_on_is_reported(self):
         # The new S95 records that the microphone could not be disabled, but the KVM runs.
         status = self.base / "mic-status"
@@ -629,6 +644,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.3")
 
     def test_main_returns_failure_exit_code(self):
+        self.u.started = lambda: False
         path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
         self.assertEqual(self.main(["--file", path, "--sha512", digest]), 1)
 

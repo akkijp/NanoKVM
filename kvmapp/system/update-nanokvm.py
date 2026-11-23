@@ -66,6 +66,8 @@ STAGE_MARK_NAME = ".staged-by-update-nanokvm"
 
 DAEMONS = ("NanoKVM-Server", "kvm_system")
 MIC_STATUS = "/run/nanokvm-microphone"  # written by S95nanokvm
+# Written by the web updater when it installed a version but could not restart into it.
+RESTART_PENDING = "/run/nanokvm-restart-pending"
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
 START_STABLE = 15
@@ -380,6 +382,14 @@ def running(name: str) -> bool:
     return subprocess.run(["pidof", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
+def read_version(app_dir: str) -> str:
+    try:
+        with open(os.path.join(app_dir, "version")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def microphone_status() -> str:
     try:
         with open(MIC_STATUS) as f:
@@ -455,6 +465,12 @@ def check_not_interrupted() -> None:
     """Refuse to work over an app that another update is moving, or that an earlier switch left
     half-done: /root/old may then be the only copy. (Upstream web updaters do not share our lock,
     so this is checked before stopping and again after.)"""
+    if os.path.exists(RESTART_PENDING):
+        raise UpdateError(
+            f"a web update installed {read_version(APP_DIR) or 'a version'} but has not restarted into it; "
+            f"{BACKUP_DIR} is the version known to work. Nothing was changed. Restart first "
+            "(/kvmapp/system/init.d/S95nanokvm restart, or retry from the web page), then update"
+        )
     missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
     backup_partial = os.path.lexists(BACKUP_DIR) and not all(
         os.path.isfile(os.path.join(BACKUP_DIR, f)) for f in APP_CORE_FILES)
@@ -628,10 +644,15 @@ def switch_and_start(version: str, reboots: bool) -> None:
                 f"{version} is installed and running, but the microphone could not be disabled ({mic}). "
                 "See FORK.md (microphone)"
             )
-        if status != 0 or not up:
+        if not up:
             raise UpdateError(
                 f"{version} is installed but did not start. The previous version is in {BACKUP_DIR}; "
                 "to recover, write the official NanoKVM image to the microSD card (see FORK.md)"
+            )
+        if status != 0:
+            raise UpdateError(
+                f"{version} is installed and running, but its init script reported a failure "
+                "(for example picoclaw could not be stopped or disabled; see the system log)"
             )
     say(f"Previous version kept in {BACKUP_DIR}")
 

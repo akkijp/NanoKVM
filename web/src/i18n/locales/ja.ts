@@ -663,6 +663,8 @@ const ja = {
       update: {
         title: 'アップデート',
         queryFailed: 'バージョン番号の取得に失敗しました',
+        restartPending: 'この版は入っていますが、まだ切り替わっていません（再起動に失敗しました）。',
+        retryRestart: '再起動をやり直す',
         updateFailed: 'アップデートに失敗しました。もう一度お試しください。',
         isLatest: 'すでに最新バージョンです。',
         available: '新しいバージョンが利用可能です。アップデートしてもよろしいですか？',
