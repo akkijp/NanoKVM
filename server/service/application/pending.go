@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -94,24 +95,44 @@ func isRestartPending() bool {
 	return pending
 }
 
+// writePending replaces the record atomically: a temporary file in the same directory is written
+// in full and synced, renamed over the record, and the directory is synced. A failure at any
+// point leaves the previous record (or none) in place, never a partial one.
 func writePending(record pendingRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(restartPendingPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	dir := filepath.Dir(restartPendingPath)
+	tmp, err := os.CreateTemp(dir, ".update-restart-pending.*")
 	if err != nil {
 		return fmt.Errorf("record the pending restart: %w", err)
 	}
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		_ = file.Close()
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("record the pending restart: %w", err)
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("record the pending restart: %w", err)
 	}
-	return file.Close()
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("record the pending restart: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("record the pending restart: %w", err)
+	}
+	if err := os.Rename(tmpPath, restartPendingPath); err != nil {
+		return fmt.Errorf("record the pending restart: %w", err)
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 func clearPending() error {

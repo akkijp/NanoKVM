@@ -123,9 +123,19 @@ PENDING=/etc/kvm/update-restart-pending
 # An update that stopped while replacing /kvmapp ("switching", or a record that cannot be read)
 # leaves /kvmapp possibly half old, half new. Starting from it would run the half-new migration
 # (which rewrites boot scripts in /etc), so do not start at all; recover as described in FORK.md.
+# The record is one line of JSON written whole (temporary file + rename). Only a complete
+# "installed" record counts as installed; anything else (switching, truncated, garbage) does not.
+pending_installed() {
+    [ "$(grep -c '' "$PENDING" 2>/dev/null)" -eq 1 ] 2>/dev/null \
+        && grep -Eqx '^\{ *"from": *"[^"]*", *"to": *"[^"]+", *"phase": *"installed" *\}$' "$PENDING"
+}
+
 pending_blocks_start() {
     [ -f "$PENDING" ] || return 1
-    grep -q '"phase": *"installed"' "$PENDING" && return 1
+    pending_installed && return 1
+    # Still keep the microphone and picoclaw off: they do not depend on /kvmapp being whole.
+    disable_audio_capture
+    disable_picoclaw
     echo "An earlier update stopped while replacing /kvmapp ($PENDING); not starting. See FORK.md" >&2
     logger -t nanokvm -p user.err "an earlier update stopped half-way; not starting, see FORK.md" 2>/dev/null || true
     return 0
@@ -169,7 +179,7 @@ start_services() {
     # (another restart or update would have its own check).
     if [ -f "$PENDING" ]; then
         pending_to="$(sed -n 's/.*"to": *"\([^"]*\)".*/\1/p' "$PENDING")"
-        if grep -q '"phase": *"installed"' "$PENDING" && [ -n "$pending_to" ] \
+        if pending_installed && [ -n "$pending_to" ] \
             && [ "$pending_to" = "$(cat /kvmapp/version 2>/dev/null)" ]; then
             pending_sum="$(cksum < "$PENDING")"
             (sleep 15

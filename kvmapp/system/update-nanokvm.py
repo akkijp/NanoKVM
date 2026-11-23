@@ -480,7 +480,7 @@ def check_not_interrupted() -> None:
                    and (record.get("phase") == "installed" or only_dirs(BACKUP_DIR)))
         if settled:
             say(f"{current} is running from {APP_DIR}; clearing the record of the earlier update")
-            os.remove(RESTART_PENDING)
+            clear_restart_pending()
         elif record.get("phase") == "installed":
             raise UpdateError(
                 f"{record.get('to') or 'a version'} was installed but has not been seen running yet; "
@@ -590,7 +590,11 @@ def daemons_run_app(since: float) -> bool:
         try:
             wanted = sha512_of(os.path.join(APP_DIR, rel))
             for pid in found:
-                if sha512_of(f"{PROC}/{pid}/exe") != wanted or process_start(pid) <= since:
+                started_at = process_start(pid)
+                # Started after the record, and up for at least START_STABLE seconds (the same
+                # check S95nanokvm makes before it clears the record).
+                if (sha512_of(f"{PROC}/{pid}/exe") != wanted or started_at <= since
+                        or time.time() - started_at < START_STABLE):
                     return False
         except (OSError, ValueError, IndexError, StopIteration):
             return False
@@ -616,14 +620,39 @@ def read_pending():
 
 
 def set_restart_pending(phase: str, old: str, new: str) -> None:
-    """Record, durably, that /kvmapp holds (or is about to hold) a version not yet seen running."""
-    os.makedirs(os.path.dirname(RESTART_PENDING), exist_ok=True)
-    fd = os.open(RESTART_PENDING, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+    """Record, durably and atomically, that /kvmapp holds (or is about to hold) a version not yet
+    seen running: a temporary file is written in full and synced, renamed over the record, and
+    the directory is synced. A failure leaves the previous record (or none), never a partial one."""
+    directory = os.path.dirname(RESTART_PENDING)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".update-restart-pending.", dir=directory)
     try:
-        os.write(fd, (json.dumps({"from": old, "to": new, "phase": phase}) + "\n").encode())
-        os.fsync(fd)
+        try:
+            os.fchmod(fd, 0o644)
+            os.write(fd, (json.dumps({"from": old, "to": new, "phase": phase}) + "\n").encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, RESTART_PENDING)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    dfd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
     finally:
-        os.close(fd)
+        os.close(dfd)
+
+
+def clear_restart_pending() -> None:
+    """Remove the record; already gone (S95nanokvm cleared it) counts as done."""
+    try:
+        os.remove(RESTART_PENDING)
+    except FileNotFoundError:
+        pass
 
 
 def switch() -> None:
@@ -721,7 +750,7 @@ def switch_and_start(version: str, reboots: bool) -> None:
         # independent: a failure of one must not skip the other.
         note = ""
         try:
-            os.remove(RESTART_PENDING)
+            clear_restart_pending()
         except OSError as remove_error:
             note = f" (the record {RESTART_PENDING} could not be removed: {remove_error})"
         outcome = restart_previous(app_script())
@@ -772,9 +801,8 @@ def switch_and_start(version: str, reboots: bool) -> None:
                 f"{version} is installed and running, but its init script reported a failure "
                 "(for example picoclaw could not be stopped or disabled; see the system log)"
             )
-        # Seen running: S95nanokvm clears the record after its own check; do not wait for it.
-        if os.path.exists(RESTART_PENDING):
-            os.remove(RESTART_PENDING)
+        # Seen running for START_STABLE: S95nanokvm clears the record too; whoever is first wins.
+        clear_restart_pending()
     say(f"Previous version kept in {BACKUP_DIR}")
 
 

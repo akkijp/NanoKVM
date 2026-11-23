@@ -494,7 +494,7 @@ class UpdateScriptTest(unittest.TestCase):
         # starttime (field 22) = 500 ticks after boot; btime = 1000 s
         fields = ["S"] + ["0"] * 18 + ["500"] + ["0"] * 10
         (proc / "1/stat").write_text("1 (kvm system) " + " ".join(fields) + "\n")
-        (proc / "stat").write_text("cpu 0\nbtime 1000\n")
+        (proc / "stat").write_text("cpu 0\nbtime 1000\n")  # started in 1970: up for a long time
         u.PROC = str(proc)
         u.pids = lambda name: ["1"]
         start = 1000 + 500 / os.sysconf("SC_CLK_TCK")
@@ -504,6 +504,18 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertFalse(u.daemons_run_app(start - 1))
         u.pids = lambda name: []
         self.assertFalse(u.daemons_run_app(start - 1))
+
+    def test_daemons_up_only_briefly_do_not_count(self):
+        u = load()
+        u.APP_DIR = self.u.APP_DIR
+        proc = self.base / "proc"
+        (proc / "1").mkdir(parents=True)
+        (proc / "1/exe").write_text("old")
+        fields = ["S"] + ["0"] * 18 + ["0"] + ["0"] * 10
+        (proc / "1/stat").write_text("1 (srv) " + " ".join(fields) + "\n")
+        (proc / "stat").write_text(f"btime {int(__import__('time').time()) - 3}\n")  # started 3 s ago
+        u.PROC, u.pids = str(proc), (lambda name: ["1"])
+        self.assertFalse(u.daemons_run_app(0))
 
     def assert_rejected_keeping(self, message, **kw):
         with self.assertRaisesRegex(self.u.UpdateError, message):
@@ -550,6 +562,36 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.assert_rejected("could not be removed", file=path, sha512=digest)
         self.assertTrue(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
+
+    def test_record_write_failure_leaves_no_partial_record(self):
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.2", "to": "2.4.3", "phase": "installed"}\n')
+        real_write = os.write
+
+        def failing_write(fd, data):
+            if b"switching" in data:
+                raise OSError("no space left on device")
+            return real_write(fd, data)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.write, self.u.os.path = failing_write, os.path
+        with self.assertRaises(OSError):
+            self.u.set_restart_pending("switching", "2.4.3", "2.5.4.1")
+        self.assertIn('"installed"', pathlib.Path(self.u.RESTART_PENDING).read_text())
+        leftovers = [n for n in os.listdir(os.path.dirname(self.u.RESTART_PENDING)) if n.startswith(".update-restart-pending.")]
+        self.assertEqual(leftovers, [])
+
+    def test_record_already_cleared_by_s95_is_fine(self):
+        self.u.clear_restart_pending()  # nothing there
+        path, digest = self.package("2.5.4.1")
+        real_clear = self.u.clear_restart_pending
+
+        def cleared_meanwhile():
+            if os.path.exists(self.u.RESTART_PENDING):
+                os.remove(self.u.RESTART_PENDING)  # S95 got there first
+            real_clear()
+
+        self.u.clear_restart_pending = cleared_meanwhile
+        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
 
     def test_success_clears_the_record(self):
         path, digest = self.package("2.5.4.1")
@@ -1080,7 +1122,7 @@ sleep() {{ :; }}
                 fake = self.base / "fs"
                 record = fake / "etc/kvm/update-restart-pending"
                 record.parent.mkdir(parents=True, exist_ok=True)
-                record.write_text(content)
+                record.write_text(content + "\n")  # both writers end the record with a newline
                 (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
                 (fake / "kvmapp/version").write_text(started_version + "\n")
                 self.run_s95("start", pidof_after_start=daemons_up)
@@ -1091,7 +1133,9 @@ sleep() {{ :; }}
                 self.assertEqual(record.exists(), not cleared)
 
     def test_half_way_record_stops_start_and_restart_before_anything_runs(self):
-        for content in ('{"from":"2.4.3","to":"2.5.4.1","phase":"switching"}', "", "garbage"):
+        for content in ('{"from":"2.4.3","to":"2.5.4.1","phase":"switching"}', "", "garbage",
+                        '{"from":"2.4.3","to":"2.5.4.1","phase":"installed"',  # truncated
+                        '{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}\n{"x":1}'):
             for action in ("start", "restart"):
                 with self.subTest(content=content, action=action):
                     fake = self.base / "fs"
@@ -1100,7 +1144,8 @@ sleep() {{ :; }}
                     record.write_text(content)
                     (self.base / "order.log").unlink(missing_ok=True)
                     order = self.run_s95(action, expect_status=1)
-                    self.assertEqual(order, [], "nothing may run: no boot steps, migration or daemons")
+                    # Only the microphone and picoclaw are switched off; no migration, no daemons.
+                    self.assertEqual(order, ["mic", "picoclaw"])
                     self.assertIn("not starting", self.last_result.stderr)
                     self.assertTrue(record.exists())
 
@@ -1108,11 +1153,11 @@ sleep() {{ :; }}
         fake = self.base / "fs"
         record = fake / "etc/kvm/update-restart-pending"
         record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text('{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}')
+        record.write_text('{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}\n')
         (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
         (fake / "kvmapp/version").write_text("2.5.4.1\n")
         self.run_s95("start", pidof_after_start=True)
-        record.write_text('{"from":"2.5.4.1","to":"2.5.4.2","phase":"installed"}')  # a newer update
+        record.write_text('{"from":"2.5.4.1","to":"2.5.4.2","phase":"installed"}\n')  # a newer update
         __import__("time").sleep(2)
         self.assertTrue(record.exists())
 

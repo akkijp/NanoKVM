@@ -13,10 +13,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/fork-env.sh"
+LOGS="$(mktemp -d)"  # per run: a root-owned leftover from an accidental sudo run cannot block it
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Builder image (docker/Dockerfile: pinned downloads, SDK build; cached layers are reused)"
-(cd "$ROOT" && make builder-image) > /tmp/fork-test-builder.log 2>&1 || { tail -30 /tmp/fork-test-builder.log; exit 1; }
+(cd "$ROOT" && make builder-image) > "$LOGS/builder.log" 2>&1 || { tail -30 "$LOGS/builder.log"; exit 1; }
 
 echo "== Go"
 "${RUN[@]}" -e GOFLAGS=-mod=readonly -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath "$GO_IMAGE" sh -euc '
@@ -52,8 +53,8 @@ if [ "${FORK_TEST_QUICK:-}" != 1 ]; then
     trap 'docker image rm -f "$IMAGE" >/dev/null 2>&1; rm -rf "$(dirname "$COPY")"' EXIT
     mkdir -p "$COPY"
     (cd "$ROOT" && tar --exclude=./build --exclude=./web/node_modules --exclude=./web/dist -cf - .) | tar -C "$COPY" -xf -
-    (cd "$COPY" && make release VERSION=0.0.0.1 DOCKER_TTY= IMAGE_NAME="$IMAGE") > /tmp/fork-test-release.log 2>&1 \
-        || { tail -40 /tmp/fork-test-release.log; exit 1; }
+    (cd "$COPY" && make release VERSION=0.0.0.1 DOCKER_TTY= IMAGE_NAME="$IMAGE") > "$LOGS/release.log" 2>&1 \
+        || { tail -40 "$LOGS/release.log"; exit 1; }
     "$COPY/scripts/verify-release-assets.sh" "$COPY/build/release" 0.0.0.1
 fi
 

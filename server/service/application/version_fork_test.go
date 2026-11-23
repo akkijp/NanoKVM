@@ -287,9 +287,10 @@ func waitFor(t *testing.T, ok func() bool) {
 
 func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	dir := t.TempDir()
-	oldPending := restartPendingPath
+	oldPending, oldApp, oldBackup := restartPendingPath, installAppDir, installBackupDir
 	restartPendingPath = filepath.Join(dir, "missing-dir", "restart-pending") // cannot be written
-	t.Cleanup(func() { restartPendingPath = oldPending })
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	t.Cleanup(func() { restartPendingPath, installAppDir, installBackupDir = oldPending, oldApp, oldBackup })
 	if err := installPreparedPackage(filepath.Join(dir, "unused")); err == nil || !strings.Contains(err.Error(), "record the pending restart") {
 		t.Fatalf("install without a record must not start: %v", err)
 	}
@@ -419,5 +420,34 @@ func TestVersionReportsMicrophoneWhenLatestCannotBeFetched(t *testing.T) {
 	body := call((*Service).GetVersion, http.MethodGet, "/api/application/version")
 	if !strings.Contains(body, `"microphone":"FAILED`) || !strings.Contains(body, `"latestError"`) {
 		t.Fatalf("version without network: %s", body)
+	}
+}
+
+func TestWritePendingNeverLeavesAPartialRecord(t *testing.T) {
+	usePendingTestPaths(t)
+	first := pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseSwitching}
+	if err := writePending(first); err != nil {
+		t.Fatal(err)
+	}
+	// The directory becomes read-only: the next write fails and the first record stays whole.
+	dir := filepath.Dir(restartPendingPath)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if os.Geteuid() != 0 { // root ignores the permission
+		if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err == nil {
+			t.Fatal("writing into a read-only directory must fail")
+		}
+	}
+	record, pending := readPending()
+	if !pending || record != first {
+		t.Fatalf("record after a failed write: %+v %v", record, pending)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".update-restart-pending.") {
+			t.Fatalf("temporary file left behind: %s", entry.Name())
+		}
 	}
 }

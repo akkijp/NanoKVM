@@ -12,6 +12,10 @@ import (
 )
 
 var (
+	// The directories install switches; variables only so tests never touch the real ones.
+	installAppDir    = AppDir
+	installBackupDir = BackupDir
+
 	mutex      sync.Mutex
 	isUpdating bool
 	updateLock *os.File
@@ -56,11 +60,16 @@ func releaseUpdateLock() {
 func installPreparedPackage(sourceDir string) error {
 	// akkijp fork: from here until the new version is seen running, /root/old is the version
 	// known to work. Record that before touching anything; no record, no switch (pending.go).
-	record := pendingRecord{From: readVersionFile(AppDir), To: readVersionFile(sourceDir), Phase: phaseSwitching}
+	record := pendingRecord{From: readVersionFile(installAppDir), To: readVersionFile(sourceDir), Phase: phaseSwitching}
+	// The previous backup goes first: if it cannot be removed, /kvmapp is untouched and no
+	// "switching" record may be left to block the next boot.
+	if err := os.RemoveAll(installBackupDir); err != nil {
+		return fmt.Errorf("failed to remove backup: %w", err)
+	}
 	if err := writePending(record); err != nil {
 		return err
 	}
-	oldFiles, err := listFiles(AppDir)
+	oldFiles, err := listFiles(installAppDir)
 	if err != nil {
 		_ = clearPending() // nothing has been moved yet
 		return fmt.Errorf("list the current app: %w", err)
@@ -72,13 +81,13 @@ func installPreparedPackage(sourceDir string) error {
 	if err := applyUpdate(sourceDir); err != nil {
 		// The backup was moved back file by file; it leaves its directories behind. Only when
 		// nothing but empty directories is left was the restore complete.
-		if record.From != "" && removeIfOnlyDirs(BackupDir) && restoreExactly(AppDir, oldFiles) {
+		if record.From != "" && removeIfOnlyDirs(installBackupDir) && restoreExactly(installAppDir, oldFiles) {
 			_ = clearPending() // the old version is in place again, file for file
 		}
 		return err
 	}
 
-	if err := utils.ChmodRecursively(AppDir, 0o755); err != nil {
+	if err := utils.ChmodRecursively(installAppDir, 0o755); err != nil {
 		return fmt.Errorf("failed to chmod: %w", err)
 	}
 
@@ -147,11 +156,8 @@ func removeIfOnlyDirs(dir string) bool {
 }
 
 func backupCurrentApp() error {
-	if err := os.RemoveAll(BackupDir); err != nil {
-		return fmt.Errorf("failed to remove backup: %w", err)
-	}
-
-	if err := utils.MoveFilesRecursively(AppDir, BackupDir); err != nil {
+	// akkijp fork: the previous backup was removed before the record was written.
+	if err := utils.MoveFilesRecursively(installAppDir, installBackupDir); err != nil {
 		return fmt.Errorf("failed to backup app: %w", err)
 	}
 
@@ -159,9 +165,9 @@ func backupCurrentApp() error {
 }
 
 func applyUpdate(sourceDir string) error {
-	if err := utils.MoveFilesRecursively(sourceDir, AppDir); err != nil {
+	if err := utils.MoveFilesRecursively(sourceDir, installAppDir); err != nil {
 		// Try to restore backup on failure
-		if restoreErr := utils.MoveFilesRecursively(BackupDir, AppDir); restoreErr != nil {
+		if restoreErr := utils.MoveFilesRecursively(installBackupDir, installAppDir); restoreErr != nil {
 			log.Errorf("Failed to restore backup after update failure: %v", restoreErr)
 		}
 		return fmt.Errorf("failed to move update in place: %w", err)

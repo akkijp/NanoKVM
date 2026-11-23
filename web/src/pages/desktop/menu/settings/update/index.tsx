@@ -151,13 +151,19 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       <Divider className="opacity-50" />
 
       {/* akkijp fork: no preview channel and no custom update server; updates come only from the fork's releases. */}
-      <Offline
-        status={status}
-        setStatus={setStatus}
-        setIsLocked={setIsLocked}
-        setErrMsg={setErrMsg}
-      />
-      <Divider className="opacity-50" />
+      {/* akkijp fork: while an earlier update is unsettled the server refuses new installs; hide the
+          offline upload so the retry button or recovery note stays on screen. */}
+      {!['restartPending', 'switchIncomplete', 'confirming'].includes(status) && (
+        <>
+          <Offline
+            status={status}
+            setStatus={setStatus}
+            setIsLocked={setIsLocked}
+            setErrMsg={setErrMsg}
+          />
+          <Divider className="opacity-50" />
+        </>
+      )}
 
       {/* akkijp fork: a microphone that could not be disabled is shown even though the KVM runs. */}
       {microphone.startsWith('FAILED') && (
