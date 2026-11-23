@@ -72,6 +72,8 @@ PICOCLAW_STATUS = "/run/nanokvm-picoclaw"  # written by S95nanokvm
 # is the only version known to work. JSON {"from", "to", "phase"}; phase "switching" while
 # /kvmapp is replaced, "installed" once complete. Same format as server/service/application/pending.go.
 RESTART_PENDING = "/etc/kvm/update-restart-pending"
+# The same rule as pending_installed in S95nanokvm, pending_record.h and pending.go.
+INSTALLED_RECORD_RE = re.compile(r'\A\{ *"from": *"[^"\\\n]*", *"to": *"[^"\\\n]+", *"phase": *"installed" *\}\Z')
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
 START_STABLE = 15
@@ -647,8 +649,11 @@ def read_pending():
         record = json.loads(data)
     except ValueError:
         return {"phase": "switching", "_mtime": mtime}
-    if not isinstance(record, dict) or record.get("phase") != "installed":
-        record = {**(record if isinstance(record, dict) else {}), "phase": "switching"}
+    if not isinstance(record, dict):
+        record = {}
+    # "installed" only in exactly the form S95nanokvm and kvm_system accept.
+    if not INSTALLED_RECORD_RE.match(data[:-1] if data.endswith("\n") else data):
+        record = {**record, "phase": "switching"}
     record["_mtime"] = mtime
     return record
 
@@ -941,8 +946,10 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
         # The first start reboots the device; this process ends with it.
         say(
             f"{version} is installed. Its first start {reboots} and then reboots the device. "
-            "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server && pidof kvm_system; "
-            "cat /run/nanokvm-microphone (should say off)"
+            "When it is back, wait at least 15 seconds after the daemons start, then check (FORK.md): "
+            f"cat /kvmapp/version (should be {version}); pidof NanoKVM-Server && pidof kvm_system; "
+            "cat /run/nanokvm-picoclaw (should be off); cat /run/nanokvm-microphone (off, unless "
+            f"/etc/kvm/enable-microphone exists); and {RESTART_PENDING} should be gone"
         )
         if service(app_script(), "restart") != 0:
             raise UpdateError(

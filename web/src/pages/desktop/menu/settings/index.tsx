@@ -30,6 +30,7 @@ import { Network } from './network';
 import { Tailscale } from './tailscale';
 import { Update } from './update';
 import { isNewerVersion } from '@/lib/version.ts';
+import { loadWatch } from '@/lib/update-watch.ts';
 
 export const Settings = () => {
   const { t } = useTranslation();
@@ -103,6 +104,18 @@ export const Settings = () => {
   useEffect(() => {
     scrollViewportRef.current?.scrollTo({ top: 0, left: 0 });
   }, [currentTab]);
+
+  // akkijp fork: an update was being watched when the page went away (its restart signs the user
+  // out). After the login, open the update tab again: it resumes the watch and reloads into the
+  // new version once that runs.
+  useEffect(() => {
+    const saved = loadWatch();
+    if (canUpdate && saved && Date.now() < saved.until) {
+      setCurrentTab('update');
+      openModal();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canUpdate]);
 
   function checkForUpdates() {
     api.getVersion().then((rsp: any) => {

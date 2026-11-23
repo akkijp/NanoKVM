@@ -959,3 +959,25 @@ func TestRestoreWithoutAVersionFileClearsTheRecord(t *testing.T) {
 		t.Fatal("a fully restored app (without a version file) must not stay marked as switching")
 	}
 }
+
+func TestInstalledRecordMustBeComplete(t *testing.T) {
+	usePendingTestPaths(t)
+	for content, installed := range map[string]bool{
+		`{"from":"2.5.4","to":"2.5.4.1","phase":"installed"}` + "\n":      true,
+		`{"from": "2.5.4", "to": "2.5.4.1", "phase": "installed"}` + "\n": true,
+		`{"from":"","to":"2.5.4.1","phase":"installed"}` + "\n":           true, // no version before
+		`{"phase":"installed"}` + "\n":                                    false,
+		`{"to":"2.5.4.1","phase":"installed"}` + "\n":                     false, // "from" missing
+		`{"from":"2.5.4","to":"","phase":"installed"}` + "\n":             false,
+		`{"to":"2.5.4.1","from":"2.5.4","phase":"installed"}` + "\n":      false, // other order
+		`{"from":"2.5.4","to":"2.5.4.1","phase":"installed"}` + "\n\n":    false,
+	} {
+		if err := os.WriteFile(restartPendingPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		record, pending := readPending()
+		if !pending || (record.Phase == phaseInstalled) != installed {
+			t.Errorf("%q: phase %q, want installed=%v", content, record.Phase, installed)
+		}
+	}
+}

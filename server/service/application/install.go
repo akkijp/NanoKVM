@@ -109,7 +109,18 @@ func installPreparedPackage(sourceDir string) error {
 		// nothing but empty directories is left was the restore complete.
 		// (Also for a device without a version file: the file list is the proof, not the version.)
 		if removeIfOnlyDirs(installBackupDir) && restoreExactly(installAppDir, oldFiles) {
-			_ = clearPending() // the old version is in place again, file for file
+			// The old version is in place again, file for file. Make that durable before the
+			// record goes (a power cut in between must keep "switching"), then make the removal
+			// durable too.
+			if syncErr := syncFilesystems(); syncErr != nil {
+				return fmt.Errorf("%w; the previous version was put back but could not be synced (%v), so the update stays marked unfinished", err, syncErr)
+			}
+			if clearErr := clearPending(); clearErr != nil {
+				return fmt.Errorf("%w; the previous version was put back but the record could not be removed (%v)", err, clearErr)
+			}
+			if syncErr := syncDir(filepath.Dir(restartPendingPath)); syncErr != nil {
+				return fmt.Errorf("%w; the previous version was put back but removing the record could not be synced (%v)", err, syncErr)
+			}
 		}
 		return err
 	}

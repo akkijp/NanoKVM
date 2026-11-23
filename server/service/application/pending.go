@@ -1,10 +1,12 @@
 package application
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -145,11 +147,20 @@ func readPending() (pendingRecord, bool) {
 		return pendingRecord{}, false
 	}
 	var record pendingRecord
-	if err != nil || json.Unmarshal(data, &record) != nil || record.Phase != phaseInstalled {
+	if err != nil || json.Unmarshal(data, &record) != nil {
+		record.Phase = phaseSwitching
+		return record, true
+	}
+	// "installed" only in exactly the form S95nanokvm and kvm_system accept (all three fields,
+	// in order, a non-empty "to"); anything else is treated as stopped half-way, as they do.
+	if !installedRecordPattern.Match(bytes.TrimSuffix(data, []byte("\n"))) {
 		record.Phase = phaseSwitching
 	}
 	return record, true
 }
+
+// The same rule as pending_installed in S95nanokvm and pending_record.h in kvm_system.
+var installedRecordPattern = regexp.MustCompile(`^\{ *"from": *"[^"\\\n]*", *"to": *"[^"\\\n]+", *"phase": *"installed" *\}$`)
 
 func isRestartPending() bool {
 	_, pending := readPending()

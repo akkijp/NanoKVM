@@ -752,6 +752,19 @@ class UpdateScriptTest(unittest.TestCase):
         u.pids = lambda name: steady[name]
         self.assertTrue(u.started())
 
+    def test_installed_record_must_be_complete(self):
+        cases = {
+            '{"from": "2.5.4", "to": "2.5.4.1", "phase": "installed"}\n': "installed",
+            '{"from":"","to":"2.5.4.1","phase":"installed"}\n': "installed",
+            '{"phase": "installed"}\n': "switching",
+            '{"to": "2.5.4.1", "phase": "installed"}\n': "switching",
+            '{"from": "2.5.4", "to": "", "phase": "installed"}\n': "switching",
+        }
+        for content, phase in cases.items():
+            with self.subTest(content=content):
+                pathlib.Path(self.u.RESTART_PENDING).write_text(content)
+                self.assertEqual(self.u.read_pending()["phase"], phase)
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
