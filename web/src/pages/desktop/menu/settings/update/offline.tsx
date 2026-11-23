@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Input } from 'antd';
 import { ExternalLinkIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -39,6 +39,13 @@ export const Offline = ({
   const { t } = useTranslation();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [sha256Checksum, setSha256Checksum] = useState('');
 
   function handleClick() {
@@ -64,12 +71,6 @@ export const Offline = ({
   async function upload(file: File | null) {
     if (!file) return;
 
-    // Without the current version and start time the outcome could never be confirmed.
-    if (!(await ensureBaseline())) {
-      setStatus('failed');
-      setErrMsg(t('settings.update.queryFailed'));
-      return;
-    }
 
     const checksum = sha256Checksum.trim();
     // akkijp fork: the SHA-256 from the release's sha256.txt is required.
@@ -92,6 +93,20 @@ export const Offline = ({
     setIsLocked(true);
     setStatus('updating');
     setErrMsg('');
+
+    // The version and start time to compare against, taken now (not when the page was opened),
+    // while the settings are locked. Without them the outcome could never be confirmed.
+    const ready = await ensureBaseline();
+    if (!mountedRef.current) {
+      setIsLocked(false); // the page was closed meanwhile: do not upload
+      return;
+    }
+    if (!ready) {
+      setIsLocked(false);
+      setStatus('failed');
+      setErrMsg(t('settings.update.queryFailed'));
+      return;
+    }
 
     const formData = new FormData();
     formData.append('file', file);

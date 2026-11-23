@@ -924,3 +924,38 @@ func TestVersionReportsPicoclawStatus(t *testing.T) {
 		t.Fatalf("version: %s", body)
 	}
 }
+
+func TestRestoreWithoutAVersionFileClearsTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash := restartPendingPath, installAppDir, installBackupDir, installTrashDir
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
+	})
+	// No version file. The old app has a directory "kvm"; the new package has a file "kvm", so
+	// moving it in fails (the emptied directory is in the way) and the old files are moved back.
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "kvm", "fps"):               "30",
+		filepath.Join(installAppDir, "server", "NanoKVM-Server"): "old",
+		filepath.Join(dir, "new", "version"):                     "2.5.4.2\n",
+		filepath.Join(dir, "new", "kvm"):                         "a file where a directory was",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil {
+		t.Fatal("the conflicting package must fail to install")
+	}
+	if got, _ := os.ReadFile(filepath.Join(installAppDir, "kvm", "fps")); string(got) != "30" {
+		t.Fatal("the old app was not put back")
+	}
+	if _, pending := readPending(); pending {
+		t.Fatal("a fully restored app (without a version file) must not stay marked as switching")
+	}
+}

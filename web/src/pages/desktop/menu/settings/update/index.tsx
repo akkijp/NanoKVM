@@ -32,10 +32,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const watchTargetRef = useRef('');
   // Proof that the watched update did something: the server restarted, or a pending record was
   // seen. Without it a reinstall of the running version could look finished before it started.
-  const serverStartedRef = useRef(0);
   const watchStartedFromRef = useRef(0);
   const watchSawPendingRef = useRef(false);
   const watchPreviousRef = useRef('');
+  // The version and server start time taken right before the current request (ensureBaseline).
+  const baselineRef = useRef({ version: '', started: 0 });
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -71,7 +72,6 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         // the restart; if it stopped half-way, only manual recovery is safe.
         setMicrophone(rsp.data.microphone || '');
         setPicoclaw(rsp.data.picoclaw || '');
-        if (rsp.data.serverStarted) serverStartedRef.current = rsp.data.serverStarted;
 
         // Watching our own update or restart retry.
         if (reloadWhenSettledRef.current) {
@@ -209,11 +209,19 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     recheckTimerRef.current = setTimeout(checkForUpdates, 5000);
   }
 
-  function retryRestart() {
+  async function retryRestart() {
     if (status !== 'restartPending') return;
 
     setIsLocked(true);
     setStatus('updating');
+    if (!(await ensureBaseline()) || !mountedRef.current) {
+      setIsLocked(false);
+      if (mountedRef.current) {
+        setStatus('restartPending');
+        setErrMsg(t('settings.update.queryFailed'));
+      }
+      return;
+    }
 
     const refused = (message: string) => {
       // Not restarting: unlock, say why, and keep the retry available.
@@ -254,16 +262,15 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // Before an upload, make sure the version and server start time it will be compared against
   // are known (the first query may have failed); without them the result could never be
   // confirmed. Resolves to false if the device cannot be reached now.
+  // Always queried afresh right before a request: a version or start time from when the page
+  // was opened may be stale (another tab may have updated meanwhile).
   function ensureBaseline(): Promise<boolean> {
-    if (serverStartedRef.current > 0 && currentVersion) return Promise.resolve(true);
     return api
       .getVersion()
       .then((rsp: any) => {
         const data = rsp?.data;
-        if (rsp?.code !== 0 || !data?.serverStarted || !data?.current) return false;
-        serverStartedRef.current = data.serverStarted;
-        setCurrentVersion(data.current);
-        watchPreviousRef.current = data.current;
+        if (rsp?.code !== 0 || !data?.serverStarted) return false;
+        baselineRef.current = { version: data.current || '', started: data.serverStarted };
         return true;
       })
       .catch(() => false);
@@ -273,9 +280,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     // A reply that arrives after the tab was closed must not lock the settings again.
     if (!mountedRef.current) return;
     watchTargetRef.current = target;
-    watchStartedFromRef.current = serverStartedRef.current;
+    watchStartedFromRef.current = baselineRef.current.started;
     watchSawPendingRef.current = false;
-    watchPreviousRef.current = currentVersion || watchPreviousRef.current;
+    watchPreviousRef.current = baselineRef.current.version;
     setIsLocked(true);
     setStatus('updating');
     setErrMsg('');
@@ -284,11 +291,19 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     scheduleRecheck();
   }
 
-  function update() {
+  async function update() {
     if (status !== 'outdated') return;
 
     setIsLocked(true);
     setStatus('updating');
+    if (!(await ensureBaseline()) || !mountedRef.current) {
+      setIsLocked(false);
+      if (mountedRef.current) {
+        setStatus('failed');
+        setErrMsg(t('settings.update.queryFailed'));
+      }
+      return;
+    }
 
     api
       .update(latestVersion)

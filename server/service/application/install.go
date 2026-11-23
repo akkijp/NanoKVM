@@ -107,7 +107,8 @@ func installPreparedPackage(sourceDir string) error {
 	if err := applyUpdate(sourceDir); err != nil {
 		// The backup was moved back file by file; it leaves its directories behind. Only when
 		// nothing but empty directories is left was the restore complete.
-		if record.From != "" && removeIfOnlyDirs(installBackupDir) && restoreExactly(installAppDir, oldFiles) {
+		// (Also for a device without a version file: the file list is the proof, not the version.)
+		if removeIfOnlyDirs(installBackupDir) && restoreExactly(installAppDir, oldFiles) {
 			_ = clearPending() // the old version is in place again, file for file
 		}
 		return err
