@@ -7,7 +7,7 @@ import * as api from '@/api/application.ts';
 
 import { Offline } from './offline.tsx';
 import { versionStatus } from '@/lib/version.ts';
-import { watchFinished } from '@/lib/update-watch.ts';
+import { clearWatch, loadWatch, saveWatch, watchFinished } from '@/lib/update-watch.ts';
 
 type UpdateProps = {
   setIsLocked: (isClosable: boolean) => void;
@@ -41,6 +41,22 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
   useEffect(() => {
     mountedRef.current = true;
+    // A watch started before the page went away (e.g. the restart signed us out and we logged in
+    // again): resume it, so the result is still confirmed and the new page loaded.
+    const saved = loadWatch();
+    if (saved && Date.now() < saved.until) {
+      baselineRef.current = { version: saved.previous, started: saved.startedFrom };
+      watchTargetRef.current = saved.target;
+      watchStartedFromRef.current = saved.startedFrom;
+      watchPreviousRef.current = saved.previous;
+      watchSawPendingRef.current = false;
+      reloadWhenSettledRef.current = true;
+      watchUntilRef.current = saved.until;
+      setIsLocked(true);
+      setStatus('updating');
+    } else if (saved) {
+      clearWatch();
+    }
     checkForUpdates();
     return () => {
       // akkijp fork: no re-check after the page is gone (and none from a reply still in flight).
@@ -86,6 +102,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           if (watchFinished(state, rsp.data)) {
             const bootFailed =
               (rsp.data.microphone || '').startsWith('FAILED') || (rsp.data.picoclaw || '').startsWith('FAILED');
+            clearWatch();
             if (!bootFailed) {
               window.location.reload(); // the target version runs, after a real restart, and has settled
               return;
@@ -195,6 +212,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   }
 
   function stopWatching(message: string) {
+    clearWatch();
     watchUntilRef.current = 0;
     reloadWhenSettledRef.current = false;
     watchTargetRef.current = '';
@@ -279,6 +297,12 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   function watchRestart(target: string) {
     // A reply that arrives after the tab was closed must not lock the settings again.
     if (!mountedRef.current) return;
+    saveWatch({
+      target,
+      previous: baselineRef.current.version,
+      startedFrom: baselineRef.current.started,
+      until: Date.now() + 10 * 60 * 1000
+    });
     watchTargetRef.current = target;
     watchStartedFromRef.current = baselineRef.current.started;
     watchSawPendingRef.current = false;
@@ -342,8 +366,10 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
       {/* akkijp fork: no preview channel and no custom update server; updates come only from the fork's releases. */}
       {/* akkijp fork: while an earlier update is unsettled the server refuses new installs; hide the
-          offline upload so the retry button or recovery note stays on screen. */}
-      {!['restartPending', 'switchIncomplete', 'confirming', 'updating'].includes(status) && (
+          offline upload so the retry button or recovery note stays on screen. It stays mounted
+          during "updating": its own upload sets that status and must not be torn down by it (the
+          upload itself refuses to start while another update is running). */}
+      {!['restartPending', 'switchIncomplete', 'confirming'].includes(status) && (
         <>
           <Offline
             status={status}

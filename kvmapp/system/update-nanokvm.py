@@ -425,12 +425,15 @@ def restart_previous(script: str) -> str:
 
 
 def started() -> bool:
-    """Both daemons come up within START_TIMEOUT and are still running START_STABLE seconds later."""
+    """Both daemons come up within START_TIMEOUT, and the very same processes (PIDs) are still
+    running START_STABLE seconds later: a restart in between (e.g. from the web page) would show
+    new PIDs that have not proven anything yet."""
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
-        if all(running(d) for d in DAEMONS):
+        first = {d: sorted(pids(d)) for d in DAEMONS}
+        if all(first.values()):
             time.sleep(START_STABLE)
-            return all(running(d) for d in DAEMONS)
+            return {d: sorted(pids(d)) for d in DAEMONS} == first
         time.sleep(1)
     return False
 

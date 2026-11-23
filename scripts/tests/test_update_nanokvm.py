@@ -742,6 +742,16 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_rejected_keeping("not been seen running", file=path, sha512=digest)
         self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
 
+    def test_started_needs_the_same_processes_for_the_whole_wait(self):
+        u = load()
+        u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
+        answers = iter([["10"], ["20"], ["11"], ["20"]])  # NanoKVM-Server was restarted meanwhile
+        u.pids = lambda name: next(answers)
+        self.assertFalse(u.started())
+        steady = {"NanoKVM-Server": ["10"], "kvm_system": ["20"]}
+        u.pids = lambda name: steady[name]
+        self.assertTrue(u.started())
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
@@ -1607,12 +1617,17 @@ sleep() {{ :; }}
         etc = self.base / "etc/init.d"
         etc.mkdir(parents=True)
         (etc / "S96picoclaw").write_text("#!/bin/sh\n")
+        run = self.base / "run"
+        run.mkdir(exist_ok=True)
         body = s95_function("wait_for_exit") + s95_function("disable_picoclaw")
-        body = body.replace("/etc/init.d", str(etc)).replace("/kvmapp/", f"{self.base}/kvmapp/")
+        body = (body.replace("/etc/init.d", str(etc)).replace("/kvmapp/", f"{self.base}/kvmapp/")
+                .replace("/run/", f"{run}/"))
+        self.assertNotIn(" /run/", body)  # nothing outside the temp dir
         script = "pidof() { return 1; }\nmv() { return 1; }\n" + body + "\ndisable_picoclaw\n"
         result = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("Failed to disable", result.stderr)
+        self.assertTrue((run / "nanokvm-picoclaw").read_text().startswith("FAILED"))
 
     def test_start_while_running_still_reports_the_microphone(self):
         log = self.base / "order.log"

@@ -29,3 +29,44 @@ export function watchFinished(state: WatchState, reply: VersionReply): boolean {
   if (sameVersion) return serverRestarted;
   return reply.current !== state.previous;
 }
+
+// The watch survives the page: a restart changes the server's signing key, so the next query is
+// answered 401 and the user logs in again. Kept in sessionStorage (this tab only).
+export type SavedWatch = { target: string; previous: string; startedFrom: number; until: number };
+
+const WATCH_KEY = 'nanokvm-update-watch';
+
+export function saveWatch(watch: SavedWatch, storage: Pick<Storage, 'setItem'> = sessionStorage) {
+  try {
+    storage.setItem(WATCH_KEY, JSON.stringify(watch));
+  } catch {
+    // storage unavailable: the watch then ends with the page
+  }
+}
+
+export function loadWatch(storage: Pick<Storage, 'getItem'> = sessionStorage): SavedWatch | null {
+  try {
+    const raw = storage.getItem(WATCH_KEY);
+    if (!raw) return null;
+    const w = JSON.parse(raw);
+    if (
+      typeof w?.target === 'string' &&
+      typeof w?.previous === 'string' &&
+      typeof w?.startedFrom === 'number' &&
+      typeof w?.until === 'number'
+    ) {
+      return w;
+    }
+  } catch {
+    // unreadable: treat as none
+  }
+  return null;
+}
+
+export function clearWatch(storage: Pick<Storage, 'removeItem'> = sessionStorage) {
+  try {
+    storage.removeItem(WATCH_KEY);
+  } catch {
+    // ignore
+  }
+}

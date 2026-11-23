@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { watchFinished } from './update-watch.ts';
+import { clearWatch, loadWatch, saveWatch, watchFinished } from './update-watch.ts';
 
 test('a new version that runs after a restart is finished', () => {
   const state = { target: '2.5.4.2', previous: '2.5.4.1', startedFrom: 100, sawPending: false };
@@ -39,4 +39,20 @@ test('an unknown start time is no proof of a restart', () => {
     watchFinished({ ...state, previous: '2.5.4.1' }, { current: '2.5.4.2', serverStarted: 100 }),
     true
   );
+});
+
+test('a watch survives a re-login (stored per tab)', () => {
+  const store = new Map<string, string>();
+  const storage = {
+    setItem: (k: string, v: string) => void store.set(k, v),
+    getItem: (k: string) => store.get(k) ?? null,
+    removeItem: (k: string) => void store.delete(k)
+  };
+  const watch = { target: '2.5.4.2', previous: '2.5.4.1', startedFrom: 100, until: 9e12 };
+  saveWatch(watch, storage);
+  assert.deepEqual(loadWatch(storage), watch);
+  clearWatch(storage);
+  assert.equal(loadWatch(storage), null);
+  store.set('nanokvm-update-watch', '{"target": 1}');
+  assert.equal(loadWatch(storage), null);
 });
