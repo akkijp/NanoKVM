@@ -217,4 +217,6 @@ var requiredPackageFiles = []string{
 	"system/init.d/S50sshd",
 	"system/init.d/S98tailscaled",
 	"system/ko/soph_mipi_rx.ko",
+	"server/dl_lib/libkvm.so",
+	"server/web/index.html",
 }

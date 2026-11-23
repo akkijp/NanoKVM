@@ -98,6 +98,9 @@ REQUIRED_FILES = (
     "system/init.d/S50sshd",
     "system/init.d/S98tailscaled",
     "system/ko/soph_mipi_rx.ko",
+    # The server cannot start without its video library, and the web UI needs its page.
+    "server/dl_lib/libkvm.so",
+    "server/web/index.html",
 )
 
 # The migration replaces the HDMI driver and reboots unless the installed one is
@@ -193,9 +196,12 @@ def fetch_manifest(version: str, work: str) -> dict:
         raise UpdateError("invalid latest.json: name does not match version")
     if not isinstance(manifest.get("sha512"), str):
         raise UpdateError("invalid latest.json: missing sha512")
-    size = manifest.get("size_bytes")
-    if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= MAX_PACKAGE_SIZE:
-        raise UpdateError("invalid latest.json: size_bytes")
+    if manifest.get("manifest_version") != 2:
+        raise UpdateError("invalid latest.json: manifest_version must be 2")
+    for key, limit in (("size_bytes", MAX_PACKAGE_SIZE), ("unpacked_size_bytes", MAX_EXPANDED_SIZE)):
+        value = manifest.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= limit:
+            raise UpdateError(f"invalid latest.json: {key}")
     return manifest
 
 
@@ -267,12 +273,14 @@ def check_members(archive: tarfile.TarFile, root: str) -> tuple:
     return members, expanded
 
 
-def extract(package: str, version: str, work: str) -> str:
+def extract(package: str, version: str, work: str, unpacked_size: int = None) -> str:
     root = f"nanokvm_{version}"
     dest = os.path.join(work, "extract")
     os.mkdir(dest)
     with tarfile.open(package, "r:gz") as archive:
         members, expanded = check_members(archive, root)
+        if unpacked_size is not None and expanded != unpacked_size:
+            raise UpdateError(f"package unpacks to {expanded} bytes, latest.json says {unpacked_size}")
         ensure_space(dest, expanded)
         # The staged copy may land on another filesystem than the work directory.
         ensure_space(os.path.dirname(STAGE_DIR) or "/", expanded)
@@ -295,6 +303,13 @@ def extract(package: str, version: str, work: str) -> str:
     return source_dir
 
 
+def default_signals() -> None:
+    """Ignored signals are inherited across exec. The init scripts and the daemons they start must
+    get the defaults back, or e.g. an old kvm_system could no longer be stopped with SIGTERM."""
+    for sig in Uninterruptible.SIGNALS:
+        signal.signal(sig, signal.SIG_DFL)
+
+
 def service(script: str, action: str) -> int:
     """Run an init script detached from the terminal, so a closed SSH session cannot make it fail
     (S95nanokvm ends with echo "OK"). A stop is logged to SERVICE_LOG. start/restart launch the
@@ -305,10 +320,12 @@ def service(script: str, action: str) -> int:
             say(f"{script} {action} (output in {SERVICE_LOG})")
             os.makedirs(os.path.dirname(SERVICE_LOG), 0o700, exist_ok=True)
             with open(SERVICE_LOG, "ab") as log:
-                return subprocess.run([script, action], stdin=subprocess.DEVNULL, stdout=log, stderr=log).returncode
+                return subprocess.run([script, action], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                      start_new_session=True, preexec_fn=default_signals).returncode
         say(f"{script} {action}")
-        return subprocess.run([script, action], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        return subprocess.run([script, action], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, start_new_session=True,
+                              preexec_fn=default_signals).returncode
     except OSError as e:
         say(f"cannot run {script}: {e}", err=True)
         return 127
@@ -366,12 +383,21 @@ def migration_reboots() -> bool:
     return not current
 
 
+# Present in every app version; a tree without them is being moved by another update.
+APP_CORE_FILES = ("version", "server/NanoKVM-Server", "kvm_system/kvm_system")
+
+
 def check_not_interrupted() -> None:
-    """Refuse to start over a half-finished earlier switch; /root/old may be the only copy."""
-    if not os.path.isfile(os.path.join(APP_DIR, "version")):
+    """Refuse to work over an app that another update is moving, or that an earlier switch left
+    half-done: /root/old may then be the only copy. (Upstream web updaters do not share our lock,
+    so this is checked before stopping and again after.)"""
+    missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
+    backup_partial = os.path.isdir(BACKUP_DIR) and not os.path.isfile(os.path.join(BACKUP_DIR, "version"))
+    if missing or backup_partial:
         raise UpdateError(
-            f"{APP_DIR} is missing or incomplete (an earlier update was interrupted). Nothing was "
-            f"changed; {BACKUP_DIR} and {STAGE_DIR} are kept. Recover as described in FORK.md"
+            f"{APP_DIR} or {BACKUP_DIR} is incomplete (another update is running, or an earlier one "
+            f"was interrupted). Nothing was changed; {BACKUP_DIR} and {STAGE_DIR} are kept. "
+            "Wait for a running web update to finish, or recover as described in FORK.md"
         )
 
 
@@ -458,6 +484,12 @@ def switch_and_start(version: str, reboots: bool) -> None:
     except UpdateError:
         drop_stage()
         raise
+    try:
+        check_not_interrupted()  # a web update may have been moving files when we stopped it
+    except UpdateError:
+        drop_stage()
+        service(STOP_SCRIPT, "restart")
+        raise
 
     try:
         switch()
@@ -538,6 +570,7 @@ def run_locked(args, work: str) -> str:
         if args.version and args.version != version:
             raise UpdateError("--version does not match the file name")
         expected = parse_digest(args.sha512)
+        unpacked_size = None  # no manifest for a local file
         package = os.path.join(work, os.path.basename(args.file))
         ensure_space(work, os.path.getsize(args.file))
         copy_limited(args.file, package, MAX_PACKAGE_SIZE)
@@ -549,6 +582,7 @@ def run_locked(args, work: str) -> str:
         expected = parse_digest(args.sha512 or manifest["sha512"])
         package = os.path.join(work, manifest["name"])
         size = manifest["size_bytes"]
+        unpacked_size = manifest["unpacked_size_bytes"]
         ensure_space(work, size)
         with open(package, "xb") as f:
             fetch(f"{RELEASES}/download/{version}/{manifest['name']}", f, size)
@@ -559,7 +593,7 @@ def run_locked(args, work: str) -> str:
         raise UpdateError("sha512 does not match; package not installed")
     say(f"sha512 verified for {version}")
 
-    source_dir = extract(package, version, work)
+    source_dir = extract(package, version, work, unpacked_size)
     os.remove(package)  # not needed any more; frees its space before anything is stopped
     if args.dry_run:
         say("Dry run: package is valid, nothing installed")

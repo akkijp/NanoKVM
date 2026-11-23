@@ -47,7 +47,8 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.LOCK_FILE = str(self.base / "update.lock")
         etc = self.base / "etc"
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
-        write_script(pathlib.Path(self.u.STOP_SCRIPT), b"#!/bin/sh\nexit 0\n")
+        write_script(pathlib.Path(self.u.STOP_SCRIPT),
+                     f"#!/bin/sh\necho \"etc-S95 $1\" >> {self.base}/root/calls.log\nexit 0\n".encode())
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
         self.u.stopped = lambda: True
@@ -59,6 +60,9 @@ class UpdateScriptTest(unittest.TestCase):
         app = pathlib.Path(self.u.APP_DIR)
         app.mkdir(parents=True)
         (app / "version").write_text("2.4.3\n")
+        for core in ("server/NanoKVM-Server", "kvm_system/kvm_system"):
+            (app / core).parent.mkdir(parents=True, exist_ok=True)
+            (app / core).write_text("old")
         write_script(app / "system/init.d/S95nanokvm", OK_SCRIPT)
 
     def tearDown(self):
@@ -347,7 +351,49 @@ class UpdateScriptTest(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "chmod failed"):
             self.run_update(file=path, sha512=digest)
         self.assert_unchanged()
+        self.assertEqual(self.calls(), "")  # not even a stop
+
+    def test_stop_comes_before_restart(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        lines = self.calls().splitlines()
+        self.assertEqual(lines[0], "etc-S95 stop")
+        self.assertTrue(lines[-1].endswith("S95nanokvm restart"), lines)
+
+    def test_app_being_moved_by_web_update_is_refused_before_stop(self):
+        (pathlib.Path(self.u.APP_DIR) / "server/NanoKVM-Server").unlink()  # half-moved to /root/old
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "another update is running"):
+            self.run_update(file=path, sha512=digest)
         self.assertEqual(self.calls(), "")
+
+    def test_half_moved_backup_is_kept(self):
+        (pathlib.Path(self.u.BACKUP_DIR) / "server").mkdir(parents=True)  # no version: still being filled
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "another update is running"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue((pathlib.Path(self.u.BACKUP_DIR) / "server").exists())
+
+    def test_web_update_found_after_stop_aborts_and_restarts(self):
+        # The web update was moving files when the stop ran.
+        app = pathlib.Path(self.u.APP_DIR)
+        write_script(pathlib.Path(self.u.STOP_SCRIPT),
+                     f"#!/bin/sh\necho \"etc-S95 $1\" >> {self.base}/root/calls.log\n"
+                     f"[ $1 = stop ] && rm -f {app}/kvm_system/kvm_system\nexit 0\n".encode())
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "another update is running"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual(self.calls().split(), ["etc-S95", "stop", "etc-S95", "restart"])
+        self.assertFalse(os.path.exists(self.u.STAGE_DIR))
+
+    def test_init_scripts_get_default_signal_handling(self):
+        # The updater ignores SIGTERM; the daemons it starts must not inherit that.
+        marker = self.base / "survived"
+        path, digest = self.package("2.5.4.1", self.entries(
+            "2.5.4.1", init=f"#!/bin/sh\nkill -TERM $$\necho yes > {marker}\n".encode()))
+        with self.assertRaises(self.u.UpdateError):
+            self.run_update(file=path, sha512=digest)  # the restart is killed by SIGTERM, so it fails
+        self.assertFalse(marker.exists(), "the init script ran with SIGTERM ignored")
 
     def test_failed_move_puts_old_app_back_and_starts_it(self):
         real_rename = os.rename
@@ -367,6 +413,7 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_failed_backup_removal_keeps_old_app(self):
         pathlib.Path(self.u.BACKUP_DIR).mkdir()
+        (pathlib.Path(self.u.BACKUP_DIR) / "version").write_text("2.4.2\n")  # a complete earlier backup
         real_rmtree = self.u.shutil.rmtree
 
         def rmtree(path, *a, **kw):
@@ -562,11 +609,14 @@ class UpdateScriptTest(unittest.TestCase):
 
     # --- download -------------------------------------------------------------
 
-    def serve_releases(self, version, package_path, sha512, size_error=0):
+    def serve_releases(self, version, package_path, sha512, size_error=0, unpacked_error=0):
         """Serve GitHub-like release URLs that redirect to another path, as GitHub does."""
         package = pathlib.Path(package_path).read_bytes()
-        manifest = json.dumps({"version": version, "name": f"nanokvm_{version}.tar.gz", "sha512": sha512,
-                               "size_bytes": len(package) + size_error}).encode()
+        with tarfile.open(package_path, "r:gz") as tar:
+            unpacked = sum(m.size for m in tar if m.isreg())
+        manifest = json.dumps({"manifest_version": 2, "version": version, "name": f"nanokvm_{version}.tar.gz",
+                               "sha512": sha512, "size_bytes": len(package) + size_error,
+                               "unpacked_size_bytes": unpacked + unpacked_error}).encode()
         requested = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -629,6 +679,11 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.serve_releases("2.5.4.1", path, digest, size_error=+1)
         self.assert_rejected("latest.json says", dry_run=True)
+
+    def test_unpacked_size_must_match_manifest(self):
+        path, digest = self.package("2.5.4.1")
+        self.serve_releases("2.5.4.1", path, digest, unpacked_error=1)
+        self.assert_rejected("unpacks to", dry_run=True)
 
     def test_default_source_is_the_fork(self):
         self.assertEqual(load().RELEASES, "https://github.com/akkijp/NanoKVM/releases")

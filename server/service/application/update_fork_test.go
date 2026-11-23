@@ -62,7 +62,7 @@ func TestExtractedPackageNeedsEveryMigrationFile(t *testing.T) {
 func TestShippedAppHasEveryRequiredFile(t *testing.T) {
 	for _, file := range requiredPackageFiles {
 		switch file {
-		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system":
+		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system", "server/dl_lib/libkvm.so", "server/web/index.html":
 			continue // produced by the build
 		}
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "kvmapp", filepath.FromSlash(file))); err != nil {

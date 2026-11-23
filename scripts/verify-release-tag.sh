@@ -40,8 +40,14 @@ BRANCH="akki/${TAG%.*}"
 VERIFY_REF="refs/fork-verify/$$-$RANDOM"
 trap 'git update-ref -d "$VERIFY_REF" 2>/dev/null || true' EXIT
 if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
-    # The ancestry check needs the full history of the branch.
-    git fetch -q --no-tags --unshallow origin
+    # The ancestry check needs the full history. Parallel builds share the clone's shallow state,
+    # so only one unshallows; the others re-check after the lock.
+    exec 7>"$(git rev-parse --git-common-dir)/fork-unshallow.lock"
+    flock 7
+    if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+        git fetch -q --no-tags --unshallow origin
+    fi
+    flock -u 7
 fi
 git fetch -q --no-tags origin "+refs/heads/$BRANCH:$VERIFY_REF"
 BRANCH_SHA="$(git rev-parse --verify "$VERIFY_REF^{commit}")"
