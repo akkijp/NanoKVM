@@ -4,6 +4,7 @@
 #     stub library whose functions all return 0, so they can load and run.
 #   - The maintenance updater tests (python3).
 #   - Web: version helper tests, type check and production build.
+#   - The builder image from docker/Dockerfile (checksums of the pinned downloads, SDK build).
 # The source is mounted read-only and copied inside each container, and the
 # containers run as the calling user, so nothing in the checkout changes owner
 # or gains build output (a later `make release` still works).
@@ -12,6 +13,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/fork-env.sh"
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
+
+echo "== Builder image (docker/Dockerfile: pinned downloads, SDK build; cached layers are reused)"
+(cd "$ROOT" && make builder-image) > /tmp/fork-test-builder.log 2>&1 || { tail -30 /tmp/fork-test-builder.log; exit 1; }
 
 echo "== Go"
 "${RUN[@]}" -e GOFLAGS=-mod=readonly -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath "$GO_IMAGE" sh -euc '

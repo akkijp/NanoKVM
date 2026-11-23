@@ -77,6 +77,7 @@ disable_audio_capture() {
         echo "FAILED: capture still present on card $left" > /run/nanokvm-microphone
         echo "Microphone could not be disabled (card $left)" >&2
         logger -t nanokvm -p user.err "microphone could not be disabled (card $left)" 2>/dev/null || true
+        return 1
     else
         echo "off" > /run/nanokvm-microphone
     fi
@@ -106,8 +107,10 @@ stop_services() {
 }
 
 start_services() {
-    # Runs on start and restart, so an update takes effect without a reboot.
-    disable_audio_capture
+    # Runs on start and restart, so an update takes effect without a reboot. If the microphone
+    # stays on, the KVM still starts (it is the way in to fix it), but the start reports failure.
+    boot_status=0
+    disable_audio_capture || boot_status=1
     disable_picoclaw
 
     if pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1; then
@@ -133,6 +136,7 @@ start_services() {
     # Daemons must not inherit the service-operation lock.
     /tmp/kvm_system/kvm_system 9>&- &
     /tmp/server/NanoKVM-Server 9>&- &
+    return "$boot_status"
 }
 
 case "$1" in

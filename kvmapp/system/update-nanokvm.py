@@ -65,6 +65,7 @@ STAGE_DIR = "/kvmapp.new"
 STAGE_MARK_NAME = ".staged-by-update-nanokvm"
 
 DAEMONS = ("NanoKVM-Server", "kvm_system")
+MIC_STATUS = "/run/nanokvm-microphone"  # written by S95nanokvm
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
 START_STABLE = 15
@@ -100,6 +101,7 @@ REQUIRED_FILES = (
     "system/ko/soph_mipi_rx.ko",
     # The server cannot start without its video library, and the web UI needs its page.
     "server/dl_lib/libkvm.so",
+    "server/dl_lib/libkvm_mmf.so",  # NEEDED by libkvm.so
     "server/web/index.html",
 )
 
@@ -339,6 +341,14 @@ def running(name: str) -> bool:
     return subprocess.run(["pidof", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
+def microphone_status() -> str:
+    try:
+        with open(MIC_STATUS) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def started() -> bool:
     """Both daemons come up within START_TIMEOUT and are still running START_STABLE seconds later."""
     deadline = time.monotonic() + START_TIMEOUT
@@ -508,7 +518,8 @@ def switch_and_start(version: str, reboots: bool) -> None:
         # The first start replaces the HDMI driver and reboots; this process ends with it.
         say(
             f"{version} is installed. Its first start replaces the HDMI driver and reboots the device. "
-            "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server && pidof kvm_system"
+            "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server && pidof kvm_system; "
+            "cat /run/nanokvm-microphone (should say off)"
         )
         if service(app_script(), "restart") != 0:
             raise UpdateError(
@@ -518,11 +529,20 @@ def switch_and_start(version: str, reboots: bool) -> None:
         time.sleep(REBOOT_WAIT)  # still alive afterwards: it did not reboot after all
         if not started():
             raise UpdateError(f"{version} is installed but neither rebooted nor started; see FORK.md")
-    elif service(app_script(), "restart") != 0 or not started():
-        raise UpdateError(
-            f"{version} is installed but did not start. The previous version is in {BACKUP_DIR}; "
-            "to recover, write the official NanoKVM image to the microSD card (see FORK.md)"
-        )
+    else:
+        status = service(app_script(), "restart")
+        up = started()
+        mic = microphone_status()
+        if up and mic.startswith("FAILED"):
+            raise UpdateError(
+                f"{version} is installed and running, but the microphone could not be disabled ({mic}). "
+                "See FORK.md (microphone)"
+            )
+        if status != 0 or not up:
+            raise UpdateError(
+                f"{version} is installed but did not start. The previous version is in {BACKUP_DIR}; "
+                "to recover, write the official NanoKVM image to the microSD card (see FORK.md)"
+            )
     say(f"Previous version kept in {BACKUP_DIR}")
 
 
@@ -539,6 +559,8 @@ def acquire_lock():
 
 
 def run(args) -> str:
+    if args.file and os.path.realpath(args.file).startswith(os.path.realpath(WORK_PARENT) + os.sep):
+        raise UpdateError(f"{args.file} is inside {WORK_PARENT}, which is cleaned up; copy it elsewhere first")
     lock = acquire_lock()
     # An interrupted earlier run can leave its work directory behind.
     os.makedirs(WORK_PARENT, 0o700, exist_ok=True)

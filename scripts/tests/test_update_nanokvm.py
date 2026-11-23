@@ -51,6 +51,7 @@ class UpdateScriptTest(unittest.TestCase):
                      f"#!/bin/sh\necho \"etc-S95 $1\" >> {self.base}/root/calls.log\nexit 0\n".encode())
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
+        self.u.MIC_STATUS = str(self.base / "mic-status")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
         self.real_migration_reboots = self.u.migration_reboots
@@ -352,6 +353,22 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assert_unchanged()
         self.assertEqual(self.calls(), "")  # not even a stop
+
+    def test_microphone_left_on_is_reported(self):
+        # The new S95 records that the microphone could not be disabled, but the KVM runs.
+        status = self.base / "mic-status"
+        path, digest = self.package("2.5.4.1", self.entries(
+            "2.5.4.1", init=f"#!/bin/sh\necho 'FAILED: capture still present on card 0' > {status}\nexit 1\n".encode()))
+        with self.assertRaisesRegex(self.u.UpdateError, "microphone could not be disabled"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+
+    def test_input_inside_work_directory_is_refused(self):
+        work = pathlib.Path(self.u.WORK_PARENT) / "run-earlier"
+        work.mkdir(parents=True)
+        path, digest = self.package("2.5.4.1", name="root/.kvm-update/run-earlier/nanokvm_2.5.4.1.tar.gz")
+        self.assert_rejected("copy it elsewhere", file=path, sha512=digest, dry_run=True)
+        self.assertTrue(pathlib.Path(path).exists())
 
     def test_stop_comes_before_restart(self):
         path, digest = self.package("2.5.4.1")
@@ -733,6 +750,7 @@ class MicrophoneTest(unittest.TestCase):
                 'basename "$dev" > "$dev/driver/unbind" 2>/dev/null',
                 'basename "$dev" > "$dev/driver/unbind" 2>/dev/null && rm -f "$(dirname "$(dirname "$dev")")/class/sound/pcmC${card}D0c"')
         result = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        self.last_status = result.returncode
         return result, (self.base / "run/nanokvm-microphone").read_text().strip()
 
     def test_capture_card_is_unbound(self):
@@ -740,11 +758,13 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text().strip(), "adc")
         self.assertEqual((self.base / "drv1/unbind").read_text(), "")  # playback card untouched
         self.assertEqual(status, "off")
+        self.assertEqual(self.last_status, 0)
 
-    def test_failure_is_recorded(self):
+    def test_failure_is_recorded_and_returned(self):
         result, status = self.run_disable(unbind_removes=False)
         self.assertTrue(status.startswith("FAILED"), status)
         self.assertIn("could not be disabled", result.stderr)
+        self.assertEqual(self.last_status, 1)
 
     def test_enable_file_keeps_it_and_reports_state(self):
         (self.base / "etc/kvm/enable-microphone").write_text("")
@@ -752,7 +772,7 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text(), "")
         self.assertEqual(status, "on")
 
-    def run_s95(self, action):
+    def run_s95(self, action, mic_fails=False):
         """Run the real S95nanokvm branch with everything that touches the device stubbed out,
         recording the order of the fork's boot steps and the daemon starts."""
         log = self.base / "order.log"
@@ -769,7 +789,7 @@ class MicrophoneTest(unittest.TestCase):
             (fake / d).mkdir(parents=True, exist_ok=True)
         stubs = f"""
 record() {{ echo "$1" >> {log}; }}
-disable_audio_capture() {{ record mic; }}
+disable_audio_capture() {{ record mic; return {1 if mic_fails else 0}; }}
 disable_picoclaw() {{ record picoclaw; }}
 pidof() {{ return 1; }}
 killall() {{ :; }}
@@ -784,7 +804,7 @@ reboot() {{ record reboot; }}
         head, case = text.split('case "$1" in', 1)
         script = head + stubs + 'case "$1" in' + case
         result = subprocess.run(["sh", "-c", script, "S95nanokvm", action], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1 if mic_fails else 0, result.stderr)
         if action == "start":  # written into the fake /boot, not the host's (macOS sh prints "-n" literally)
             self.assertTrue((fake / "boot/hostname.prefix").read_text().strip().endswith("kvm"))
         return log.read_text().split() if log.exists() else []
@@ -800,6 +820,14 @@ reboot() {{ record reboot; }}
                 first_daemon = min(order.index("daemon-kvm_system"), order.index("daemon-NanoKVM-Server"))
                 self.assertLess(order.index("mic"), first_daemon)
                 self.assertLess(order.index("picoclaw"), first_daemon)
+
+    def test_microphone_failure_fails_the_start_but_the_kvm_runs(self):
+        for action in ("start", "restart"):
+            with self.subTest(action=action):
+                (self.base / "order.log").unlink(missing_ok=True)
+                order = self.run_s95(action, mic_fails=True)  # asserts exit status 1
+                self.assertIn("daemon-NanoKVM-Server", order)
+                self.assertIn("daemon-kvm_system", order)
 
 
 if __name__ == "__main__":

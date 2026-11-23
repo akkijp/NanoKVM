@@ -64,7 +64,8 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 - 止めた後、2 つのデーモンが消えたことを確かめてから入れ替える。止められなければ何も変えずに終わる。入れ替えに失敗したら前の版を `/kvmapp` に戻して起動する
 - 新しい版のデーモンが動き続けなければ、失敗（終了コード 1）として知らせる。入れ替えに失敗して前の版も起動できなかったときも、そう知らせる
 - 新しい版の初回起動が HDMI のドライバーを入れ替える機器では、機器がそのまま再起動する（SSH は切れる）。戻ってきたら `cat /kvmapp/version` と `pidof NanoKVM-Server && pidof kvm_system`（両方が動いていること）で確かめる
-- 前回の更新が入れ替えの途中で止まっていた（`/kvmapp/version` が無い）ときは何もしない。そのときは `/root/old`（前の版）と `/kvmapp.new`（新しい版）が残っているので、`mv /root/old /kvmapp` で前の版を戻して再起動するか、下の microSD の書き直しで戻す
+- 前回の更新が入れ替えの途中で止まっていた（`/kvmapp` が欠けている・`/root/old` が途中まで）ときは何もしない。`/kvmapp` 自体が無く、`/root/old` に `version`・`server/NanoKVM-Server`・`kvm_system/kvm_system` が揃っているときに限り、`mv /root/old /kvmapp` で前の版を戻して再起動してよい。それ以外（`/kvmapp` が残っている・`/root/old` が途中まで）は、下の microSD の書き直しで戻す
+- マイクを切れなかったときは、新しい版は動いたまま失敗（終了コード 1）として知らせる（`/run/nanokvm-microphone` に理由）
 
 自動では戻さない。戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。
 
