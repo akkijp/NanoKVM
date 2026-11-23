@@ -12,8 +12,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// sentinelPath is a variable only so tests can point it at a temporary directory.
+var sentinelPath = utils.TransferSentinelPath
+
 const (
-	sentinelPath       = utils.TransferSentinelPath
 	tickerInterval     = 2500 * time.Millisecond
 	sentinelPermission = 0644
 )

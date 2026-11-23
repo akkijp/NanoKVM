@@ -12,7 +12,12 @@ interface UpdateProps {
   setIsLocked: (isClosable: boolean) => void;
   setErrMsg: (msg: string) => void;
   // akkijp fork: called once the package is accepted; the parent watches the restart.
-  onInstalled: () => void;
+  onInstalled: (version: string) => void;
+}
+
+// nanokvm_2.5.4.2.tar.gz -> 2.5.4.2 (the name was validated before the upload)
+function versionOf(filename: string) {
+  return filename.replace(/^nanokvm_/, '').replace(/\.tar\.gz$/, '');
 }
 
 export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled }: UpdateProps) => {
@@ -74,7 +79,7 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
       .then(async (rsp: Response) => {
         // The proxy may return 502 after the update stops the old server.
         if (rsp.status === 502) {
-          onInstalled();
+          onInstalled(versionOf(file.name));
           return;
         }
         if (!rsp.ok) throw new Error(`HTTP error ${rsp.status}`);
@@ -89,7 +94,7 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
       })
       .then((result: unknown) => {
         if (result !== undefined) return;
-        onInstalled();
+        onInstalled(versionOf(file.name));
       })
       .catch((error: unknown) => {
         setIsLocked(false);

@@ -895,7 +895,12 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     try:
         set_restart_pending("installed", previous, version)  # complete; only the restart is missing
     except OSError as e:
-        say(f"warning: could not mark {version} as installed in {RESTART_PENDING}: {e}", err=True)
+        # Not known to be durable: do not start it. The record may say "switching" or (if only the
+        # directory sync failed) "installed"; either way the next step is the manual check.
+        raise UpdateError(
+            f"{version} was put in place, but its record could not be saved ({e}); it was not started. "
+            f"Check {RESTART_PENDING} and recover as described in FORK.md"
+        )
 
     if reboots:
         # The first start reboots the device; this process ends with it.

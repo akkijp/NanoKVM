@@ -49,20 +49,20 @@ func cleanupStaleWorkspaces(baseDir string) error {
 }
 
 func prepareCacheForUpdate() error {
-	info, err := os.Stat(AppDir)
+	info, err := os.Stat(installAppDir)
 	if err != nil {
 		return fmt.Errorf("stat current application: %w", err)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("current application is not a directory")
 	}
-	if err := os.MkdirAll(CacheDir, cacheDirMode); err != nil {
+	if err := os.MkdirAll(installCacheDir, cacheDirMode); err != nil {
 		return fmt.Errorf("create update cache: %w", err)
 	}
-	if err := os.Chmod(CacheDir, cacheDirMode); err != nil {
+	if err := os.Chmod(installCacheDir, cacheDirMode); err != nil {
 		return fmt.Errorf("chmod update cache: %w", err)
 	}
-	if err := cleanupStaleWorkspaces(CacheDir); err != nil {
+	if err := cleanupStaleWorkspaces(installCacheDir); err != nil {
 		return fmt.Errorf("clean stale update workspace: %w", err)
 	}
 	return nil

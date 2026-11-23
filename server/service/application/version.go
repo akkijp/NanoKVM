@@ -40,7 +40,10 @@ const (
 var (
 	latestClient       = utils.NewUpdateHTTPClient(15 * time.Second)
 	packageNamePattern = regexp.MustCompile(`^nanokvm_[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:\.[0-9]{1,9})?\.tar\.gz$`)
-	versionPattern     = regexp.MustCompile(`^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:\.[0-9]{1,9})?(?:-[0-9A-Za-z.-]{1,32})?(?:\+[0-9A-Za-z.-]{1,32})?$`)
+	// The installed (previous) version: upstream ones may carry a pre-release or build suffix.
+	// Same rule as kvmapp/system/update-nanokvm.py PREVIOUS_VERSION_RE.
+	previousVersionPattern = regexp.MustCompile(`^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:\.[0-9]{1,9})?(?:[-+][0-9A-Za-z.+-]{1,32})?$`)
+	versionPattern         = regexp.MustCompile(`^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:\.[0-9]{1,9})?(?:-[0-9A-Za-z.-]{1,32})?(?:\+[0-9A-Za-z.-]{1,32})?$`)
 )
 
 func (s *Service) GetVersion(c *gin.Context) {

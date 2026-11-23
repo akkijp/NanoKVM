@@ -26,6 +26,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // until this time instead of ending in "failed".
   const watchUntilRef = useRef(0);
   const reloadWhenSettledRef = useRef(false);
+  // The version the watched update or restart should bring up; reload only once it runs.
+  const watchTargetRef = useRef('');
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -60,27 +62,37 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
         // the restart; if it stopped half-way, only manual recovery is safe.
         setMicrophone(rsp.data.microphone || '');
-        if (!rsp.data.restartPending) {
-          watchUntilRef.current = 0; // settled
-          if (reloadWhenSettledRef.current) {
-            window.location.reload();
+
+        // Watching our own update or restart retry.
+        if (reloadWhenSettledRef.current) {
+          const pending = rsp.data.restartPending;
+          if (!pending && (!watchTargetRef.current || rsp.data.current === watchTargetRef.current)) {
+            window.location.reload(); // the target version runs and has settled
+            return;
+          }
+          if (pending && rsp.data.restartPhase === 'switching') {
+            // Stopped half-way (not in progress): manual recovery; fall through to show it.
+            reloadWhenSettledRef.current = false;
+          } else if (Date.now() >= watchUntilRef.current) {
+            stopWatching(t('settings.update.unconfirmed'));
+            return;
+          } else {
+            setStatus('updating');
+            scheduleRecheck();
             return;
           }
         }
         if (rsp.data.restartPending) {
           setLatestVersion(rsp.data.pendingVersion || '');
           if (rsp.data.restartPhase === 'confirming' || rsp.data.restartPhase === 'updating') {
-            // Restarted; the device is checking that both daemons stay up. Look again shortly.
-            setStatus(rsp.data.restartPhase === 'updating' ? 'updating' : 'confirming');
+            // Another update, or the restart check, is in progress. Look again shortly, but not
+            // forever: past the deadline the settings can be closed (the device carries on).
             if (!watchUntilRef.current) watchUntilRef.current = Date.now() + 5 * 60 * 1000;
-            scheduleRecheck();
-          } else if (
-            rsp.data.restartPhase === 'installed' &&
-            reloadWhenSettledRef.current &&
-            Date.now() < watchUntilRef.current
-          ) {
-            // Our own update or retry: the old server may still answer before it is restarted.
-            setStatus('updating');
+            if (Date.now() >= watchUntilRef.current) {
+              stopWatching(t('settings.update.unconfirmed'));
+              return;
+            }
+            setStatus(rsp.data.restartPhase === 'updating' ? 'updating' : 'confirming');
             scheduleRecheck();
           } else {
             // Waiting for the user (retry or manual recovery): stop watching, unlock the settings.
@@ -122,12 +134,17 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           return;
         }
         // Gave up watching: let the user close the settings or try again.
-        watchUntilRef.current = 0;
-        reloadWhenSettledRef.current = false;
-        setIsLocked(false);
-        setStatus('failed');
-        setErrMsg(t('settings.update.queryFailed'));
+        stopWatching(t('settings.update.queryFailed'));
       });
+  }
+
+  function stopWatching(message: string) {
+    watchUntilRef.current = 0;
+    reloadWhenSettledRef.current = false;
+    watchTargetRef.current = '';
+    setIsLocked(false);
+    setStatus('failed');
+    setErrMsg(message);
   }
 
   function scheduleRecheck() {
@@ -162,7 +179,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           checkForUpdates();
           return;
         }
-        watchRestart();
+        watchRestart(latestVersion); // the pending version
       })
       .catch((error: unknown) => {
         refused(error instanceof Error ? error.message : t('settings.update.updateFailed'));
@@ -172,7 +189,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // akkijp fork: after an update or a restart retry the device restarts, and may reboot (a new
   // HDMI driver or init script). Watch the version API until it answers again and the update has
   // settled, then reload; never reload into a page that cannot load.
-  function watchRestart() {
+  function watchRestart(target: string) {
+    watchTargetRef.current = target;
     setIsLocked(true);
     setStatus('updating');
     setErrMsg('');
@@ -196,11 +214,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           setErrMsg(rsp.msg || t('settings.update.updateFailed'));
           return;
         }
-        watchRestart();
+        watchRestart(latestVersion);
       })
       .catch(() => {
         // The server may already be restarting into the new version.
-        watchRestart();
+        watchRestart(latestVersion);
       });
   }
 

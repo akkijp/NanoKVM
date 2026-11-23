@@ -1,8 +1,11 @@
 package application
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -298,6 +301,9 @@ func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "new"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "new", "version"), []byte("2.5.4.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "record the pending restart") {
 		t.Fatalf("install without a record must not start: %v", err)
 	}
@@ -461,24 +467,32 @@ func TestWritePendingNeverLeavesAPartialRecord(t *testing.T) {
 
 func TestDirectorySyncFailureLeavesTheAppUntouched(t *testing.T) {
 	dir := t.TempDir()
-	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncDir
+	oldPending, oldApp, oldBackup, oldSync, oldTrash := restartPendingPath, installAppDir, installBackupDir, syncDir, installTrashDir
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
-	oldTrashForTest := installTrashDir
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
-	t.Cleanup(func() { installTrashDir = oldTrashForTest })
-	syncDir = func(string) error { return fmt.Errorf("I/O error") }
+	syncCalls := 0
+	syncDir = func(string) error { syncCalls++; return fmt.Errorf("I/O error") }
 	t.Cleanup(func() {
-		restartPendingPath, installAppDir, installBackupDir, syncDir = oldPending, oldApp, oldBackup, oldSync
+		restartPendingPath, installAppDir, installBackupDir, syncDir, installTrashDir = oldPending, oldApp, oldBackup, oldSync, oldTrash
 	})
-	if err := os.MkdirAll(installAppDir, 0o755); err != nil {
-		t.Fatal(err)
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"): "2.5.4.1\n",
+		filepath.Join(dir, "new", "version"):    "2.5.4.2\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644); err != nil {
-		t.Fatal(err)
+	err := installPreparedPackage(filepath.Join(dir, "new"))
+	if err == nil || !strings.Contains(err.Error(), "I/O error") {
+		t.Fatalf("install must stop when the record cannot be made durable, got %v", err)
 	}
-	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil {
-		t.Fatal("install must stop when the record cannot be made durable")
+	if syncCalls == 0 {
+		t.Fatal("the injected directory sync was never reached")
 	}
 	if readVersionFile(installAppDir) != "2.5.4.1" {
 		t.Fatal("the app was touched")
@@ -667,5 +681,79 @@ func TestPreviousBackupIsRemovedThroughTheTrash(t *testing.T) {
 		if _, err := os.Lstat(d); err == nil {
 			t.Fatalf("%s is still there", d)
 		}
+	}
+}
+
+func TestInstallRefusesAnUnreadablePreviousVersion(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup := restartPendingPath, installAppDir, installBackupDir
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	t.Cleanup(func() { restartPendingPath, installAppDir, installBackupDir = oldPending, oldApp, oldBackup })
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"): "\"2.5.4.1\"\n",
+		filepath.Join(dir, "new", "version"):    "2.5.4.2\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "not a version") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(restartPendingPath); err == nil {
+		t.Fatal("nothing may be recorded")
+	}
+}
+
+func TestOfflineUpdateWithWrongSHA256ChangesNothing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := usePendingTestPaths(t)
+	oldApp, oldBackup, oldCache, oldSentinel := installAppDir, installBackupDir, installCacheDir, sentinelPath
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installCacheDir, sentinelPath = filepath.Join(dir, "cache"), filepath.Join(dir, "sentinel")
+	t.Cleanup(func() {
+		installAppDir, installBackupDir, installCacheDir, sentinelPath = oldApp, oldBackup, oldCache, oldSentinel
+	})
+	if err := os.MkdirAll(installAppDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := os.ReadFile(fourPartArchive(t, "2.5.4.2", "2.5.4.2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", "nanokvm_2.5.4.2.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(pkg); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wrong := sha256.Sum256([]byte("another package"))
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update/offline", &body)
+	c.Request.Header.Set("Content-Type", form.FormDataContentType())
+	c.Request.Header.Set("X-SHA256-Checksum", hex.EncodeToString(wrong[:]))
+	(&Service{}).OfflineUpdate(c)
+	if !strings.Contains(w.Body.String(), "sha256 checksum mismatch") {
+		t.Fatalf("offline update with a wrong SHA-256: %s", w.Body.String())
+	}
+	if readVersionFile(installAppDir) != "2.5.4.1" {
+		t.Fatal("the app was touched")
+	}
+	if _, err := os.Stat(restartPendingPath); err == nil {
+		t.Fatal("a record was written")
 	}
 }

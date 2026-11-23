@@ -15,6 +15,7 @@ var (
 	// The directories install switches; variables only so tests never touch the real ones.
 	installAppDir    = AppDir
 	installBackupDir = BackupDir
+	installCacheDir  = CacheDir
 
 	mutex      sync.Mutex
 	isUpdating bool
@@ -61,6 +62,14 @@ func installPreparedPackage(sourceDir string) error {
 	// akkijp fork: from here until the new version is seen running, /root/old is the version
 	// known to work. Record that before touching anything; no record, no switch (pending.go).
 	record := pendingRecord{From: readVersionFile(installAppDir), To: readVersionFile(sourceDir), Phase: phaseSwitching}
+	// Both go into the record, which S95nanokvm and kvm_system parse strictly: refuse anything
+	// they would not accept, before anything changes.
+	if record.From != "" && !previousVersionPattern.MatchString(record.From) { // empty: no version file
+		return fmt.Errorf("the installed version %q is not a version; nothing was changed", record.From)
+	}
+	if !versionPattern.MatchString(record.To) {
+		return fmt.Errorf("the new version %q is not a version; nothing was changed", record.To)
+	}
 	// The new files are made final (permissions) and durable where they are staged, before
 	// anything changes: fsync reports write-back errors that sync(1) cannot, and the staged tree
 	// holds no runtime files that could vanish while it is walked.

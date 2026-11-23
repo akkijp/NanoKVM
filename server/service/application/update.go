@@ -72,7 +72,7 @@ func update() error {
 	if err := prepareCacheForUpdate(); err != nil {
 		return err
 	}
-	workspace, err := newUpdateWorkspace(CacheDir)
+	workspace, err := newUpdateWorkspace(installCacheDir)
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func update() error {
 			log.Warnf("failed to clean update workspace %s: %v", workspace.dir, err)
 		}
 	}()
-	if err := ensureInstallFilesystem(workspace.dir, AppDir, BackupDir); err != nil {
+	if err := ensureInstallFilesystem(workspace.dir, installAppDir, installBackupDir); err != nil {
 		return err
 	}
 	if err := preflightManifestSpace(workspace.dir, latest); err != nil {

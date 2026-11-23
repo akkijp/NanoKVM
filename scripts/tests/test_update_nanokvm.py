@@ -685,6 +685,20 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
 
+    def test_installed_record_that_cannot_be_saved_does_not_start(self):
+        real_set = self.u.set_restart_pending
+
+        def set_pending(phase, a, b):
+            real_set(phase, a, b)
+            if phase == "installed":
+                raise OSError(5, "Input/output error")  # e.g. the directory sync after the rename
+
+        self.u.set_restart_pending = set_pending
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "record could not be saved"):
+            self.run_update(file=path, sha512=digest)
+        self.assertFalse(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
