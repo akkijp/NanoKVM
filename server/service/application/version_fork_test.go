@@ -478,3 +478,38 @@ func TestDirectorySyncFailureLeavesTheAppUntouched(t *testing.T) {
 		t.Fatal("a record of a switch that never started was left behind")
 	}
 }
+
+func TestNewFilesAreSyncedBeforeInstalledIsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncFilesystems
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	var phaseAtSync string
+	syncFilesystems = func() {
+		record, _ := readPending()
+		phaseAtSync = record.Phase
+	}
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, syncFilesystems = oldPending, oldApp, oldBackup, oldSync
+	})
+	for _, d := range []string{installAppDir, filepath.Join(dir, "new")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new", "version"), []byte("2.5.4.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err != nil {
+		t.Fatal(err)
+	}
+	if phaseAtSync != phaseSwitching {
+		t.Fatalf("the files were synced while the record said %q, want switching", phaseAtSync)
+	}
+	if record, _ := readPending(); record.Phase != phaseInstalled || readVersionFile(installAppDir) != "2.5.4.2" {
+		t.Fatalf("after install: record %+v, version %q", record, readVersionFile(installAppDir))
+	}
+}

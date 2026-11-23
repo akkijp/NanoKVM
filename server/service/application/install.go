@@ -3,6 +3,7 @@ package application
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -94,12 +95,25 @@ func installPreparedPackage(sourceDir string) error {
 		return fmt.Errorf("failed to chmod: %w", err)
 	}
 
+	// The new files, their permissions and the directories reach the disk before the record says
+	// "installed": a power cut in between must leave "switching", never "installed" over files
+	// that were not written yet.
+	syncFilesystems()
+
 	// Complete: only the restart is missing, which may now be retried.
 	record.Phase = phaseInstalled
 	if err := writePending(record); err != nil {
 		return err
 	}
 	return nil
+}
+
+// syncFilesystems flushes everything to disk (sync(1), present on the device via busybox).
+// A variable so tests can see the order.
+var syncFilesystems = func() {
+	if err := exec.Command("sync").Run(); err != nil {
+		log.Warnf("sync failed: %v", err)
+	}
 }
 
 // listFiles lists the regular files under dir, relative to it.

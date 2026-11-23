@@ -60,7 +60,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.running = lambda name: False
         self.u.daemons_run_app = lambda since: False
         self.real_migration_reboots = self.u.migration_reboots
-        self.u.migration_reboots = lambda new_init: False
+        self.u.migration_reboots = lambda new_init: ""
         self.u.check_same_filesystem = lambda: None
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
         app = pathlib.Path(self.u.APP_DIR)
@@ -593,6 +593,28 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.clear_restart_pending = cleared_meanwhile
         self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
 
+    def test_files_reach_the_disk_before_installed_is_recorded(self):
+        order = []
+        real_sync, real_set = os.sync, self.u.set_restart_pending
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.path = os.path
+        self.u.os.sync = lambda: (order.append("sync"), real_sync())[1]
+        self.u.set_restart_pending = lambda phase, a, b: (order.append(phase), real_set(phase, a, b))[1]
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertLess(order.index("switching"), order.index("sync"))
+        self.assertLess(order.index("sync"), order.index("installed"))
+
+    def test_reboot_message_names_the_reason(self):
+        self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
+        self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
+        said = []
+        self.u.say = lambda message, err=False: said.append(message)
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertTrue(any("installs its own init script" in m for m in said), said)
+        self.assertFalse(any("HDMI" in m for m in said), said)
+
     def test_success_clears_the_record(self):
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
@@ -672,16 +694,17 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assertTrue((pathlib.Path(self.u.BACKUP_DIR) / "server/NanoKVM-Server").exists())
 
-    def test_web_update_found_after_stop_aborts_and_restarts(self):
+    def test_web_update_found_after_stop_aborts_and_stays_stopped(self):
         # The web update was moving files when the stop ran.
         app = pathlib.Path(self.u.APP_DIR)
         write_script(pathlib.Path(self.u.STOP_SCRIPT),
                      f"#!/bin/sh\necho \"etc-S95 $1\" >> {self.base}/root/calls.log\n"
                      f"[ $1 = stop ] && rm -f {app}/kvm_system/kvm_system\nexit 0\n".encode())
         path, digest = self.package("2.5.4.1")
-        with self.assertRaisesRegex(self.u.UpdateError, "another update is running"):
+        with self.assertRaisesRegex(self.u.UpdateError, "left stopped"):
             self.run_update(file=path, sha512=digest)
-        self.assertEqual(self.calls().split(), ["etc-S95", "stop", "etc-S95", "restart"])
+        # Stopped, and not started again from the incomplete tree.
+        self.assertEqual(self.calls().split(), ["etc-S95", "stop"])
         self.assertFalse(os.path.exists(self.u.STAGE_DIR))
 
     def test_init_scripts_get_default_signal_handling(self):
@@ -755,7 +778,7 @@ class UpdateScriptTest(unittest.TestCase):
         def killed_by_reboot(seconds):
             raise Rebooted()
 
-        self.u.migration_reboots = lambda new_init: True
+        self.u.migration_reboots = lambda new_init: "replaces the HDMI driver"
         self.u.started = lambda: False  # the daemons never come up in this boot
         self.u.time = types.SimpleNamespace(sleep=killed_by_reboot, monotonic=__import__("time").monotonic)
         path, digest = self.package("2.5.4.1")
@@ -765,13 +788,13 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual(self.installed_version(), "2.5.4.1")
 
     def test_driver_reboot_that_fails_first_is_reported(self):
-        self.u.migration_reboots = lambda new_init: True
+        self.u.migration_reboots = lambda new_init: "replaces the HDMI driver"
         path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
         with self.assertRaisesRegex(self.u.UpdateError, "failed before rebooting"):
             self.run_update(file=path, sha512=digest)
 
     def test_driver_reboot_that_never_happens_is_reported(self):
-        self.u.migration_reboots = lambda new_init: True
+        self.u.migration_reboots = lambda new_init: "replaces the HDMI driver"
         self.u.started = lambda: False
         path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "neither rebooted nor started"):
@@ -797,11 +820,11 @@ class UpdateScriptTest(unittest.TestCase):
         driver.write_bytes(b"driver")
         digest = hashlib.md5(b"driver").hexdigest()
         u.CURRENT_DRIVER_MD5 = digest
-        self.assertFalse(u.migration_reboots(same))
+        self.assertEqual(u.migration_reboots(same), "")
         u.CURRENT_DRIVER_MD5, u.LEGACY_DRIVER_MD5 = "0" * 32, digest
-        self.assertFalse(u.migration_reboots(same))  # legacy driver is fine without hdmi_version
+        self.assertEqual(u.migration_reboots(same), "")  # legacy driver is fine without hdmi_version
         hdmi.write_text("u")
-        self.assertTrue(u.migration_reboots(same))  # but not for HDMI version 2
+        self.assertEqual(u.migration_reboots(same), "replaces the HDMI driver")  # but not for HDMI version 2
         hdmi.write_text("")
         with self.assertRaisesRegex(u.UpdateError, "is empty"):
             u.migration_reboots(same)  # new_app_init fails on an empty hdmi_version
@@ -820,9 +843,9 @@ class UpdateScriptTest(unittest.TestCase):
         installed.write_bytes(b"#!/bin/sh\n# upstream\n")
         new.write_bytes(b"#!/bin/sh\n# fork\n")
         u.STOP_SCRIPT = str(installed)
-        self.assertTrue(u.migration_reboots(str(new)))  # first install over an upstream S95
+        self.assertIn("init script", u.migration_reboots(str(new)))  # first install over an upstream S95
         new.write_bytes(installed.read_bytes())
-        self.assertFalse(u.migration_reboots(str(new)))
+        self.assertEqual(u.migration_reboots(str(new)), "")
 
     def test_kvm_system_reboots_when_it_replaces_the_init_script(self):
         source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()

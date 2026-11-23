@@ -19,7 +19,10 @@ IMAGE=""
 cleanup() {
     status=$?
     [ -n "$IMAGE" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
-    [ -n "$COPY" ] && rm -rf "$(dirname "$COPY")"
+    if [ -n "$COPY" ]; then
+        git -C "$ROOT" worktree remove --force "$COPY" >/dev/null 2>&1
+        rm -rf "$(dirname "$COPY")"
+    fi
     if [ "$status" -eq 0 ]; then
         rm -rf "$LOGS"
     else
@@ -62,10 +65,18 @@ if [ "${FORK_TEST_QUICK:-}" != 1 ]; then
     # packaged with a four-part version and checked like a release. In a throwaway copy, with a
     # builder image of its own.
     echo "== Release build (set FORK_TEST_QUICK=1 to skip)"
+    # From the committed tree (a temporary worktree of HEAD), like a release from a tag: files that
+    # exist only in the working copy, or earlier build output, cannot make it pass.
+    if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null; then
+        echo "[ERROR] the release stage needs a git checkout (or set FORK_TEST_QUICK=1)" >&2
+        exit 1
+    fi
+    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+        echo "[WARN] uncommitted changes are not part of the release stage" >&2
+    fi
     COPY="$(mktemp -d)/NanoKVM"
     IMAGE="nanokvm-builder-forktest-$$"
-    mkdir -p "$COPY"
-    (cd "$ROOT" && tar --exclude=./build --exclude=./web/node_modules --exclude=./web/dist -cf - .) | tar -C "$COPY" -xf -
+    git -C "$ROOT" worktree add -q --detach "$COPY" HEAD
     (cd "$COPY" && make release VERSION=0.0.0.1 DOCKER_TTY= IMAGE_NAME="$IMAGE") > "$LOGS/release.log" 2>&1 \
         || { tail -40 "$LOGS/release.log"; exit 1; }
     "$COPY/scripts/verify-release-assets.sh" "$COPY/build/release" 0.0.0.1

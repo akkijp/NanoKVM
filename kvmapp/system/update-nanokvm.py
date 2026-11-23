@@ -437,8 +437,8 @@ def stopped() -> bool:
     return False
 
 
-def migration_reboots(new_init_script: str) -> bool:
-    """Whether the new version's first start will reboot: it does when it replaces the HDMI
+def migration_reboots(new_init_script: str) -> str:
+    """Why the new version's first start will reboot ("" when it will not): it does when it replaces the HDMI
     driver, and (akkijp fork) when it replaces the init script, so that the new S95nanokvm does
     the start. Raises when that first start would fail on this device (new_app_init returns
     APP_INIT_FAILED), so nothing is stopped for an update that cannot start."""
@@ -459,13 +459,15 @@ def migration_reboots(new_init_script: str) -> bool:
         hdmi = {b"c": 1, b"u": 2, b"d": 2}.get(first, -1)
     current = digest == CURRENT_DRIVER_MD5 or (hdmi != 2 and digest == LEGACY_DRIVER_MD5)
     if not current:
-        return True
+        return "replaces the HDMI driver"
     # Checked last: the checks above can refuse the update and must always run.
     try:
         with open(new_init_script, "rb") as new, open(STOP_SCRIPT, "rb") as installed:
-            return new.read() != installed.read()
+            if new.read() != installed.read():
+                return "installs its own init script (S95nanokvm)"
     except OSError:
-        return True
+        return "installs its own init script (S95nanokvm)"
+    return ""
 
 
 # Present in every app version; a tree without them is being moved by another update.
@@ -743,7 +745,7 @@ def install(source_dir: str, version: str) -> None:
         switch_and_start(version, reboots, previous)
 
 
-def switch_and_start(version: str, reboots: bool, previous: str) -> None:
+def switch_and_start(version: str, reboots: str, previous: str) -> None:
     try:
         stop_old()
     except UpdateError:
@@ -751,10 +753,15 @@ def switch_and_start(version: str, reboots: bool, previous: str) -> None:
         raise
     try:
         check_not_interrupted()  # a web update may have been moving files when we stopped it
-    except UpdateError:
+    except UpdateError as e:
         drop_stage()
-        service(STOP_SCRIPT, "restart")
-        raise
+        # Do not start anything: the init script in /etc may be an upstream one that does not
+        # check for an unfinished update and would run a migration from an incomplete tree.
+        raise UpdateError(
+            f"{e}. The service was stopped and is left stopped, so nothing runs from an incomplete "
+            f"{APP_DIR}. Recover over SSH as described in FORK.md (check {APP_DIR} and {BACKUP_DIR}, "
+            "then start with /etc/init.d/S95nanokvm start, or write the microSD card again)"
+        )
 
     try:
         set_restart_pending("switching", previous, version)
@@ -788,17 +795,20 @@ def switch_and_start(version: str, reboots: bool, previous: str) -> None:
                 f"again either{note}. Recover as described in FORK.md"
             )
         raise UpdateError(f"could not put the new version in place; {outcome}{note}: {e}")
+    remove_stage_mark()
+    # The new files, their permissions and the renamed directories reach the disk before the
+    # record says "installed": a power cut in between must leave "switching", never an
+    # "installed" record over files that were not written yet.
+    os.sync()
     try:
         set_restart_pending("installed", previous, version)  # complete; only the restart is missing
     except OSError as e:
         say(f"warning: could not mark {version} as installed in {RESTART_PENDING}: {e}", err=True)
-    remove_stage_mark()
-    os.sync()
 
     if reboots:
-        # The first start replaces the HDMI driver and reboots; this process ends with it.
+        # The first start reboots the device; this process ends with it.
         say(
-            f"{version} is installed. Its first start replaces the HDMI driver and reboots the device. "
+            f"{version} is installed. Its first start {reboots} and then reboots the device. "
             "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server && pidof kvm_system; "
             "cat /run/nanokvm-microphone (should say off)"
         )
