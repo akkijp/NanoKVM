@@ -120,3 +120,20 @@ test('an update refused because a newer release appeared leaves nothing to resum
   await waitFor(() => expect(api.getVersion).toHaveBeenCalled());
   expect(setIsLocked).not.toHaveBeenCalledWith(true);
 });
+
+test('a failed restart ends the stored watch: reopening the page does not resume it', async () => {
+  sessionStorage.setItem(
+    'nanokvm-update-watch',
+    JSON.stringify({ target: '2.5.4.2', previous: '2.5.4.1', startedFrom: 100, until: Date.now() + 600000 })
+  );
+  vi.mocked(api.getVersion).mockResolvedValue({
+    code: 0,
+    data: { current: '2.5.4.2', restartPending: true, restartPhase: 'installed', pendingVersion: '2.5.4.2', serverStarted: 100 }
+  } as never);
+  const setIsLocked = vi.fn();
+  const { findByText, unmount } = render(<Update setIsLocked={setIsLocked} />);
+  await findByText('settings.update.retryRestart');
+  expect(sessionStorage.getItem('nanokvm-update-watch')).toBeNull();
+  expect(setIsLocked).toHaveBeenLastCalledWith(false);
+  unmount();
+});

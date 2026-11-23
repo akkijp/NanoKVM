@@ -142,7 +142,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             setStatus(rsp.data.restartPhase === 'confirming' ? 'confirming' : 'updating');
             scheduleRecheck();
           } else {
-            // Waiting for the user (retry or manual recovery): stop watching, unlock the settings.
+            // Waiting for the user (retry or manual recovery): stop watching, unlock the settings,
+            // and forget the stored watch (a reload must not reopen the update tab for it).
+            clearWatch();
             watchUntilRef.current = 0;
             reloadWhenSettledRef.current = false;
             setIsLocked(false);

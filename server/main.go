@@ -1,6 +1,7 @@
 package main
 
 import (
+	"NanoKVM-Server/service/application"
 	"log"
 	"os"
 	"os/signal"
@@ -23,6 +24,12 @@ import (
 )
 
 func main() {
+	// akkijp fork: an update that stopped while replacing /kvmapp leaves it possibly half old,
+	// half new. An older init script (e.g. upstream, still in /etc during a first install) would
+	// start this server anyway; refuse before anything else, so nothing serves from that tree.
+	if err := application.CheckStartAllowed(); err != nil {
+		log.Fatalf("not starting: %v", err)
+	}
 	initialize()
 	defer dispose()
 

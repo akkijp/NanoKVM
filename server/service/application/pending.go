@@ -252,6 +252,17 @@ func readVersionFile(dir string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// CheckStartAllowed is called when the server starts: it refuses while a record says an update
+// stopped while replacing /kvmapp ("switching", or a record that cannot be read). An "installed"
+// record is fine: that is the restart the update asked for.
+func CheckStartAllowed() error {
+	record, pending := readPending()
+	if pending && record.Phase != phaseInstalled {
+		return fmt.Errorf("an earlier update stopped while replacing /kvmapp (%s); recover as described in FORK.md", restartPendingPath)
+	}
+	return nil
+}
+
 // refuseWhilePending answers an update request while an earlier update is unfinished: nothing is
 // installed, and the response says how to finish it. It reports whether it answered.
 func refuseWhilePending(c *gin.Context) bool {

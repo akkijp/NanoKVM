@@ -78,6 +78,8 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 
 ### 途中で止まったときの戻し方
 
+最初の導入（上流の版から）の途中で止まった場合、`/etc` にはまだ上流の起動台本が残っていることがある。上流の起動台本は未完了の記録を確かめず、マイクも切らない（このフォークのサーバーと移行処理は、記録を見て起動を断る）。戻すまでの間はマイクが有効かもしれないものとして扱う。
+
 1. SSH で入る。SSH を切っている機器（`/etc/kvm/ssh_stop` がある）は、microSD のブート領域（FAT）に空のファイル `start_ssh_once` を置いて起動すると、その起動のときだけ SSH が有効になる
 2. `cat /etc/kvm/update-restart-pending` で `from`（前の版）を見る
 3. `/kvmapp` 自体が無く、`/root/old/version` が `from` と同じで、`/root/old/server/NanoKVM-Server` と `/root/old/kvm_system/kvm_system` があるときに限り、手で戻せる:

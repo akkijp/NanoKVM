@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -1179,5 +1180,126 @@ func TestOfflineUpdateWithTheRightSHA256Installs(t *testing.T) {
 	record, pending := readPending()
 	if !pending || record.Phase != phaseInstalled || record.From != "2.5.4.1" || record.To != "2.5.4.2" {
 		t.Fatalf("record %+v %v", record, pending)
+	}
+}
+
+func TestServerRefusesToStartOverAHalfSwitchedApp(t *testing.T) {
+	usePendingTestPaths(t)
+	if err := CheckStartAllowed(); err != nil {
+		t.Fatalf("no record: %v", err)
+	}
+	if err := writePending(pendingRecord{From: "2.4.0", To: "2.5.4.1", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckStartAllowed(); err != nil {
+		t.Fatalf("installed record (the restart the update asked for): %v", err)
+	}
+	if err := writePending(pendingRecord{From: "2.4.0", To: "2.5.4.1", Phase: phaseSwitching}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckStartAllowed(); err == nil {
+		t.Fatal("a switching record must stop the server")
+	}
+	if err := os.WriteFile(restartPendingPath, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckStartAllowed(); err == nil {
+		t.Fatal("an unreadable record must stop the server")
+	}
+}
+
+// The production online update, end to end against a fake GitHub: installs on success, and keeps
+// the old app and its backup when the digest or the version inside the package is wrong.
+func TestOnlineUpdateEndToEnd(t *testing.T) {
+	cases := []struct {
+		name      string
+		inner     string
+		badDigest bool
+		ok        bool
+	}{
+		{"installs", "2.5.4.2", false, true},
+		{"wrong digest", "2.5.4.2", true, false},
+		{"wrong version inside", "2.5.4.9", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := usePendingTestPaths(t)
+			oldApp, oldBackup, oldCache, oldTrash, oldBase, oldDownload := installAppDir, installBackupDir, installCacheDir, installTrashDir, updateBaseURL, releaseDownloadBaseURL
+			installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+			installCacheDir, installTrashDir = filepath.Join(dir, "cache"), filepath.Join(dir, ".kvm-update", "old.removing")
+			t.Cleanup(func() {
+				installAppDir, installBackupDir, installCacheDir, installTrashDir, updateBaseURL, releaseDownloadBaseURL = oldApp, oldBackup, oldCache, oldTrash, oldBase, oldDownload
+			})
+			for path, content := range map[string]string{
+				filepath.Join(installAppDir, "version"):           "2.5.4.1\n",
+				filepath.Join(installBackupDir, "version"):        "2.5.4\n",
+				filepath.Join(installBackupDir, "server", "keep"): "previous backup",
+			} {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			archivePath := writeTestArchive(t, packageEntries("nanokvm_2.5.4.2", tc.inner, ""))
+			pkg, err := os.ReadFile(archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := inspectUpdateArchive(archivePath, "nanokvm_2.5.4.2")
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := sha512.Sum512(pkg)
+			if tc.badDigest {
+				sum = sha512.Sum512([]byte("another package"))
+			}
+			manifest, _ := json.Marshal(Latest{
+				ManifestVersion: 2, Version: "2.5.4.2", Name: "nanokvm_2.5.4.2.tar.gz",
+				Sha512: base64.StdEncoding.EncodeToString(sum[:]), LegacySize: uint64(len(pkg)),
+				SizeBytes: uint64(len(pkg)), UnpackedSizeBytes: info.expandedBytes,
+			})
+			releases := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				switch r.URL.Path {
+				case "/latest/download/latest.json":
+					_, _ = w.Write(manifest)
+				case "/download/2.5.4.2/nanokvm_2.5.4.2.tar.gz":
+					_, _ = w.Write(pkg)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer releases.Close()
+			updateBaseURL = releases.URL + "/latest/download"
+			releaseDownloadBaseURL = releases.URL + "/download"
+
+			err = update("2.5.4.2")
+			if tc.ok {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if readVersionFile(installAppDir) != "2.5.4.2" {
+					t.Fatalf("installed %q", readVersionFile(installAppDir))
+				}
+				if record, _ := readPending(); record.Phase != phaseInstalled {
+					t.Fatalf("record %+v", record)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("the update must fail")
+			}
+			if readVersionFile(installAppDir) != "2.5.4.1" {
+				t.Fatalf("the old app was replaced by %q", readVersionFile(installAppDir))
+			}
+			if got, _ := os.ReadFile(filepath.Join(installBackupDir, "server", "keep")); string(got) != "previous backup" {
+				t.Fatal("the previous backup was lost")
+			}
+			if _, pending := readPending(); pending {
+				t.Fatal("a record was left behind")
+			}
+		})
 	}
 }

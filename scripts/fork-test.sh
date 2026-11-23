@@ -16,7 +16,6 @@
 set -euo pipefail
 CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$CHECKOUT"
-. "$ROOT/scripts/fork-env.sh"
 LOGS="$(mktemp -d)"  # per run: a root-owned leftover from an accidental sudo run cannot block it
 COPY=""
 IMAGE=""
@@ -48,6 +47,8 @@ else
     echo "[WARN] not a git checkout: testing the files as they are, without the release stage" >&2
     FORK_TEST_QUICK=1
 fi
+# The pinned images of the commit under test (not of the working tree).
+. "$ROOT/scripts/fork-env.sh"
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Builder image (docker/Dockerfile: pinned downloads, SDK build; cached layers are reused)"
