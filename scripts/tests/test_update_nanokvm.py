@@ -40,8 +40,20 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.BACKUP_DIR = str(self.base / "root/old")
         self.u.WORK_PARENT = str(self.base / "root")
         self.u.LOCK_FILE = str(self.base / "update.lock")
-        self.u.STOP_SCRIPT = str(self.base / "etc/S95nanokvm")
+        etc = self.base / "etc"
+        self.u.ETC_INIT_DIR = str(etc / "init.d")
+        self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
         write_script(pathlib.Path(self.u.STOP_SCRIPT), b"#!/bin/sh\nexit 0\n")
+        (etc / "kvm").mkdir(parents=True)
+        (etc / "kvm/update-nanokvm.py").write_text("old updater")
+        (self.base / "ko").mkdir()
+        (self.base / "ko/soph_mipi_rx.ko").write_text("old driver")
+        self.u.ETC_FILES = (str(etc / "kvm/update-nanokvm.py"), str(self.base / "ko/soph_mipi_rx.ko"))
+        self.u.ETC_BACKUP_DIR = str(self.base / "root/old-etc")
+        self.u.PENDING_FILE = str(etc / "kvm/update-pending")
+        self.u.REBOOT = ["sh", "-c", f"echo reboot >> {self.base}/root/calls.log"]
+        self.health = [True]
+        self.u.healthy = lambda: self.health.pop(0) if len(self.health) > 1 else self.health[0]
         app = pathlib.Path(self.u.APP_DIR)
         app.mkdir(parents=True)
         (app / "version").write_text("2.4.3\n")
@@ -83,7 +95,8 @@ class UpdateScriptTest(unittest.TestCase):
         return str(path), base64.b64encode(digest).decode()
 
     def run_update(self, **kw):
-        args = types.SimpleNamespace(file=None, sha512=None, version=None, dry_run=False)
+        args = types.SimpleNamespace(file=None, sha512=None, version=None, dry_run=False,
+                                     rollback=False, confirm_boot=False)
         args.__dict__.update(kw)
         return self.u.run(args)
 
@@ -110,7 +123,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual(self.installed_version(), "2.5.4.1")
         self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.3")
         calls = (self.base / "root/calls.log").read_text()
-        self.assertIn("/root/kvmapp/system/init.d/S95nanokvm restart", calls)
+        self.assertIn("root/kvmapp/system/init.d/S95nanokvm restart", calls)
         self.assert_no_work_dirs()
 
     def test_accepts_hex_digest(self):
@@ -172,15 +185,54 @@ class UpdateScriptTest(unittest.TestCase):
 
     # --- service handling -----------------------------------------------------
 
+    def calls(self):
+        log = self.base / "root/calls.log"
+        return log.read_text() if log.exists() else ""
+
+    def etc_updater(self):
+        return pathlib.Path(self.u.ETC_FILES[0]).read_text()
+
     def test_stop_failure_changes_nothing(self):
         write_script(pathlib.Path(self.u.STOP_SCRIPT), FAIL_SCRIPT)
+        self.u.running = lambda name: True
         path, digest = self.package("2.5.4.1")
-        self.assert_rejected("could not stop", file=path, sha512=digest)
+        self.assert_rejected("nothing was changed", file=path, sha512=digest)
 
-    def test_start_failure_rolls_back(self):
-        path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
+    def test_partial_stop_brings_old_version_back(self):
+        log = self.base / "root/stop.log"
+        write_script(pathlib.Path(self.u.STOP_SCRIPT),
+                     f"#!/bin/sh\necho $1 >> {log}\n[ $1 = restart ]\n".encode())
+        self.u.running = lambda name: name != "NanoKVM-Server"
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("nothing was changed", file=path, sha512=digest)
+        self.assertEqual(log.read_text().split(), ["stop", "restart"])
+
+    def test_staging_failure_happens_before_stop(self):
+        def broken(source_dir):
+            raise OSError("chmod failed")
+        self.u.prepare = broken
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(OSError, "chmod failed"):
+            self.run_update(file=path, sha512=digest)
+        self.assert_unchanged()
+        self.assertEqual(self.calls(), "")
+
+    # A new version whose first start rewrites /etc (as the migration does) and then fails.
+    BREAKS_ETC = b"#!/bin/sh\nd=$(dirname \"$0\")/../../../..\necho new updater > $d/etc/kvm/update-nanokvm.py\necho new > $d/etc/init.d/S00new\nexit 1\n"
+
+    def test_start_failure_rolls_back_app_and_boot_files(self):
+        path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=self.BREAKS_ETC))
         self.assert_rejected("rolled back", file=path, sha512=digest)
-        self.assertIn("restart", (self.base / "root/calls.log").read_text())
+        self.assertEqual(self.etc_updater(), "old updater")
+        self.assertFalse((self.base / "etc/init.d/S00new").exists())
+        self.assertTrue((self.base / "etc/init.d/S95nanokvm").exists())
+        self.assertIn("restart", self.calls())
+        self.assertFalse(os.path.exists(self.u.PENDING_FILE))
+
+    def test_unhealthy_start_rolls_back(self):
+        self.health = [False, True]
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("did not come up", file=path, sha512=digest)
 
     def test_main_returns_failure_exit_code(self):
         path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
@@ -192,12 +244,64 @@ class UpdateScriptTest(unittest.TestCase):
         finally:
             sys.argv = argv
 
+    def test_success_clears_pending_and_saves_boot_files(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.PENDING_FILE))
+        saved = pathlib.Path(self.u.ETC_BACKUP_DIR)
+        self.assertTrue((saved / "init.d/S95nanokvm").exists())
+
+    def test_manual_rollback(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        pathlib.Path(self.u.ETC_FILES[0]).write_text("new updater")
+        self.run_update(rollback=True)
+        self.assert_unchanged()
+        self.assertEqual(self.etc_updater(), "old updater")
+
+    def test_rollback_reboots_when_driver_changed(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        pathlib.Path(self.u.ETC_FILES[1]).write_text("new driver")
+        self.run_update(rollback=True)
+        self.assertEqual(pathlib.Path(self.u.ETC_FILES[1]).read_text(), "old driver")
+        self.assertIn("reboot", self.calls())
+
+    def test_confirm_boot_keeps_healthy_update(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.u.set_pending("2.5.4.1")
+        self.assertEqual(self.run_update(confirm_boot=True), "update confirmed")
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+        self.assertFalse(os.path.exists(self.u.PENDING_FILE))
+
+    def test_confirm_boot_rolls_back_unhealthy_update(self):
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.u.set_pending("2.5.4.1")
+        self.health = [False, True]
+        with self.assertRaisesRegex(self.u.UpdateError, "after reboot"):
+            self.run_update(confirm_boot=True)
+        self.assert_unchanged()
+        self.assertFalse(os.path.exists(self.u.PENDING_FILE))
+
+    def test_confirm_boot_without_pending_does_nothing(self):
+        self.assertEqual(self.run_update(confirm_boot=True), "nothing pending")
+        self.assert_unchanged()
+
     def test_concurrent_run_is_refused(self):
         import fcntl
         path, digest = self.package("2.5.4.1")
         with open(self.u.LOCK_FILE, "w") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             self.assert_rejected("already running", file=path, sha512=digest, dry_run=True)
+
+    def test_leftover_work_dirs_are_removed(self):
+        stale = pathlib.Path(self.u.WORK_PARENT) / ".kvm-update-stale"
+        stale.mkdir()
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest, dry_run=True)
+        self.assertFalse(stale.exists())
 
     # --- download -------------------------------------------------------------
 

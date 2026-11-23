@@ -275,6 +275,10 @@ func runPicoclawOnboard() (string, *PicoclawError) {
 }
 
 func runPicoclawOnboardContext(ctx context.Context) (string, *PicoclawError) {
+	// akkijp fork: onboarding runs the picoclaw binary, so it is refused like start.
+	if runtimeDisabledByFork {
+		return "", newPicoclawError(CodeRuntimeUnavailable, runtimeDisabledMessage)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

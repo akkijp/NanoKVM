@@ -46,18 +46,35 @@ stop_process() {
 # akkijp fork: the microphone is off. The SoC's audio ADC is built into the
 # kernel, so unbind every sound card that has a capture device. Nothing in
 # NanoKVM records audio. Create /etc/kvm/enable-microphone to keep it on.
-disable_audio_capture() {
-    [ -e /etc/kvm/enable-microphone ] && return 0
-    for pcm in /dev/snd/pcmC*D*c; do
+# The result is in /run/nanokvm-microphone ("off", "on (enabled)" or
+# "FAILED: ..."), and a failure is also logged.
+capture_cards() {
+    for pcm in /sys/class/sound/pcmC*D*c; do
         [ -e "$pcm" ] || continue
-        card="${pcm#/dev/snd/pcmC}"
-        card="${card%%D*}"
-        dev="$(readlink -f "/sys/class/sound/card$card/device")" || continue
-        [ -n "$dev" ] && [ -w "$dev/driver/unbind" ] || continue
-        if basename "$dev" > "$dev/driver/unbind"; then
-            echo "Microphone disabled: card$card ($(basename "$dev"))"
+        card="${pcm##*/pcmC}"
+        echo "${card%%D*}"
+    done | sort -u
+}
+
+disable_audio_capture() {
+    if [ -e /etc/kvm/enable-microphone ]; then
+        echo "on (enabled)" > /run/nanokvm-microphone
+        return 0
+    fi
+    for card in $(capture_cards); do
+        dev="$(readlink -f "/sys/class/sound/card$card/device")"
+        if [ -n "$dev" ] && [ -w "$dev/driver/unbind" ]; then
+            basename "$dev" > "$dev/driver/unbind" 2>/dev/null
         fi
     done
+    left="$(capture_cards | tr '\n' ' ')"
+    if [ -n "$left" ]; then
+        echo "FAILED: capture still present on card $left" > /run/nanokvm-microphone
+        echo "Microphone could not be disabled (card $left)" >&2
+        logger -t nanokvm -p user.err "microphone could not be disabled (card $left)" 2>/dev/null || true
+    else
+        echo "off" > /run/nanokvm-microphone
+    fi
 }
 
 # akkijp fork: the AI agent runtime (picoclaw) is disabled. Stop a gateway an
@@ -159,6 +176,12 @@ case "$1" in
 
     # Start services
     start_services || exit 1
+
+    # akkijp fork: an update whose first start rebooted the device is checked
+    # now, and rolled back if the new version does not come up.
+    if [ -f /etc/kvm/update-pending ] && [ -f /etc/kvm/update-nanokvm.py ]; then
+        python3 /etc/kvm/update-nanokvm.py --confirm-boot > /tmp/update-confirm.log 2>&1 9>&- &
+    fi
    ;;
 
   stop)

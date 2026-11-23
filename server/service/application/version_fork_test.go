@@ -1,8 +1,16 @@
 package application
 
 import (
+	"crypto/sha256"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // akkijp fork: X.Y.Z.N versions must be accepted end to end.
@@ -60,10 +68,58 @@ func TestUpdateURLsAreExact(t *testing.T) {
 }
 
 func TestOfflineUpdateRequiresSHA256(t *testing.T) {
-	if _, err := parseSHA256Checksum(""); err == nil {
-		t.Fatal("an empty SHA-256 must be rejected")
+	file := filepath.Join(t.TempDir(), "nanokvm_2.5.4.1.tar.gz")
+	if err := os.WriteFile(file, []byte("package"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if err := verifySHA256Checksum("unused", nil); err == nil {
-		t.Fatal("verification without a digest must fail")
+	good := sha256.Sum256([]byte("package"))
+	bad := sha256.Sum256([]byte("other"))
+
+	if _, err := parseSHA256Checksum(""); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("empty SHA-256: got %v, want required", err)
 	}
+	if err := verifySHA256Checksum(file, nil); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("missing digest: got %v, want required", err)
+	}
+	if err := verifySHA256Checksum(file, bad[:]); err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("wrong digest: got %v, want mismatch", err)
+	}
+	if err := verifySHA256Checksum(file, good[:]); err != nil {
+		t.Fatalf("matching digest rejected: %v", err)
+	}
+}
+
+// The offline endpoint refuses a package without a digest before it reads the upload.
+func TestOfflineUpdateWithoutDigestIsRefusedFirst(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update/offline", strings.NewReader("not multipart"))
+	err := offlineUpdate(c)
+	if err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("got %v, want sha256 required", err)
+	}
+}
+
+func TestUpdateLockIsSharedThroughTheLockFile(t *testing.T) {
+	old := updateLockPath
+	updateLockPath = filepath.Join(t.TempDir(), "update.lock")
+	defer func() { updateLockPath = old }()
+
+	other, err := os.OpenFile(updateLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	if acquireUpdateLock() {
+		releaseUpdateLock()
+		t.Fatal("update lock acquired while the maintenance updater holds it")
+	}
+	_ = other.Close()
+
+	if !acquireUpdateLock() {
+		t.Fatal("update lock not acquired once free")
+	}
+	releaseUpdateLock()
 }

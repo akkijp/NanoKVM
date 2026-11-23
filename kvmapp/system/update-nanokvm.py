@@ -15,6 +15,15 @@ Usage:
       newest release's latest.json is used. --sha512 pins the expected
       digest instead of trusting the one in latest.json.
   Add --dry-run to verify the package without installing it.
+  update-nanokvm.py --rollback
+      Put back the previous version and the boot files it replaced.
+
+Before installing, the app (/kvmapp -> /root/old) and the boot files that the
+new version's first start rewrites (/etc/init.d, this updater, the HDMI
+driver -> /root/old-etc) are saved. The new version must come up (both
+daemons running, web port answering) or everything is put back. When its
+first start reboots the device, /etc/kvm/update-pending makes the next boot
+run --confirm-boot, which does the same check and rolls back on failure.
 """
 
 import argparse
@@ -27,10 +36,12 @@ import os
 import posixpath
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 RELEASES = "https://github.com/akkijp/NanoKVM/releases"
@@ -42,6 +53,19 @@ LOCK_FILE = "/run/nanokvm-update.lock"
 # its own script, so its first start already runs the fork's boot steps.
 STOP_SCRIPT = "/etc/init.d/S95nanokvm"
 APP_INIT_SCRIPT = "system/init.d/S95nanokvm"
+
+# Boot files the migration of a new app version rewrites
+# (support/sg2002/kvm_system/main/lib/system_init/system_init.cpp).
+ETC_BACKUP_DIR = "/root/old-etc"
+ETC_INIT_DIR = "/etc/init.d"
+ETC_FILES = ("/etc/kvm/update-nanokvm.py", "/mnt/system/ko/soph_mipi_rx.ko")
+PENDING_FILE = "/etc/kvm/update-pending"
+
+DAEMONS = ("NanoKVM-Server", "kvm_system")
+WEB_PORTS = (80, 443)
+HEALTH_TIMEOUT = 90
+HEALTH_STABLE = 10
+REBOOT = ["reboot"]
 
 MAX_PACKAGE_SIZE = 1 << 30
 MAX_EXPANDED_SIZE = 2 << 30
@@ -218,58 +242,194 @@ def app_script() -> str:
     return os.path.join(APP_DIR, APP_INIT_SCRIPT)
 
 
-def swap_in(source_dir: str) -> None:
-    if os.path.exists(BACKUP_DIR):
-        shutil.rmtree(BACKUP_DIR)
-    os.rename(APP_DIR, BACKUP_DIR)
-    try:
-        shutil.move(source_dir, APP_DIR)
-    except Exception:
-        if os.path.exists(APP_DIR):
-            shutil.rmtree(APP_DIR)
-        os.rename(BACKUP_DIR, APP_DIR)
-        raise
-    for root, dirs, files in os.walk(APP_DIR):
+def running(name: str) -> bool:
+    return subprocess.run(["pidof", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def web_answers() -> bool:
+    for port in WEB_PORTS:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=2):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def healthy() -> bool:
+    """Both daemons stay up and the web port answers, within HEALTH_TIMEOUT."""
+    deadline = time.monotonic() + HEALTH_TIMEOUT
+    while time.monotonic() < deadline:
+        if all(running(d) for d in DAEMONS) and web_answers():
+            time.sleep(HEALTH_STABLE)
+            if all(running(d) for d in DAEMONS):
+                return True
+        time.sleep(2)
+    return False
+
+
+def copy_entry(source: str, dest: str) -> None:
+    if os.path.isdir(source):
+        shutil.copytree(source, dest, symlinks=True)
+    else:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(source, dest, follow_symlinks=False)
+
+
+def backup_etc() -> None:
+    """Save the boot files the new version's migration will rewrite."""
+    if os.path.exists(ETC_BACKUP_DIR):
+        shutil.rmtree(ETC_BACKUP_DIR)
+    os.makedirs(ETC_BACKUP_DIR, 0o700)
+    copy_entry(ETC_INIT_DIR, os.path.join(ETC_BACKUP_DIR, "init.d"))
+    for path in ETC_FILES:
+        if os.path.exists(path):
+            copy_entry(path, os.path.join(ETC_BACKUP_DIR, "files", path.lstrip("/")))
+
+
+def files_differ(a: str, b: str) -> bool:
+    if os.path.exists(a) != os.path.exists(b):
+        return True
+    return os.path.exists(a) and sha512_of(a) != sha512_of(b)
+
+
+def restore_etc() -> bool:
+    """Put the saved boot files back. Returns True when a reboot is needed (driver changed)."""
+    reboot = any(
+        files_differ(path, os.path.join(ETC_BACKUP_DIR, "files", path.lstrip("/")))
+        for path in ETC_FILES
+        if path.endswith(".ko")
+    )
+    saved = os.path.join(ETC_BACKUP_DIR, "init.d")
+    if not os.path.isdir(saved):
+        raise UpdateError(f"no saved boot files in {ETC_BACKUP_DIR}")
+    for name in os.listdir(ETC_INIT_DIR):
+        os.remove(os.path.join(ETC_INIT_DIR, name))
+    for name in os.listdir(saved):
+        shutil.copy2(os.path.join(saved, name), os.path.join(ETC_INIT_DIR, name), follow_symlinks=False)
+    for path in ETC_FILES:
+        backup = os.path.join(ETC_BACKUP_DIR, "files", path.lstrip("/"))
+        if os.path.exists(backup):
+            copy_entry(backup, path + ".restore")
+            os.replace(path + ".restore", path)
+        elif os.path.exists(path):
+            os.remove(path)
+    return reboot
+
+
+def set_pending(version: str) -> None:
+    os.makedirs(os.path.dirname(PENDING_FILE), exist_ok=True)
+    with open(PENDING_FILE, "w") as f:
+        f.write(version + "\n")
+    os.sync()
+
+
+def clear_pending() -> None:
+    if os.path.exists(PENDING_FILE):
+        os.remove(PENDING_FILE)
+        os.sync()
+
+
+def rollback(discard: str) -> None:
+    """Put the saved app and boot files back and start the previous version."""
+    if not os.path.isdir(BACKUP_DIR):
+        raise UpdateError(f"no previous version in {BACKUP_DIR}")
+    service(app_script(), "stop")
+    if os.path.exists(APP_DIR):
+        os.rename(APP_DIR, discard)
+    os.rename(BACKUP_DIR, APP_DIR)
+    needs_reboot = restore_etc()
+    clear_pending()
+    os.sync()
+    if needs_reboot:
+        # The previous HDMI driver only loads at boot.
+        print("rolled back; rebooting to load the previous driver")
+        subprocess.run(REBOOT)
+        return
+    if service(app_script(), "restart") != 0 or not healthy():
+        raise UpdateError("rolled back, but the previous version did not come up either")
+
+
+def prepare(source_dir: str) -> None:
+    """Set permissions in the staging copy, before anything is stopped."""
+    for root, dirs, files in os.walk(source_dir):
         os.chmod(root, 0o755)
         for name in files:
             os.chmod(os.path.join(root, name), 0o755)
 
 
-def install(source_dir: str, work: str) -> None:
-    if service(STOP_SCRIPT, "stop") != 0:
-        raise UpdateError("could not stop the nanokvm service; nothing was changed")
-    try:
-        swap_in(source_dir)
-    except Exception as e:
-        service(app_script(), "restart")
-        raise UpdateError(f"could not put the new version in place; previous version kept: {e}")
+def stop_old() -> None:
+    if service(STOP_SCRIPT, "stop") == 0:
+        return
+    # A partial stop can leave the web server down. Bring the old version back up.
+    if not all(running(d) for d in DAEMONS):
+        if service(STOP_SCRIPT, "restart") != 0 or not healthy():
+            raise UpdateError("could not stop the nanokvm service, and it did not come back up")
+    raise UpdateError("could not stop the nanokvm service; nothing was changed")
 
-    if service(app_script(), "restart") == 0:
+
+def install(source_dir: str, version: str, work: str) -> None:
+    prepare(source_dir)
+    backup_etc()
+    stop_old()
+
+    if os.path.exists(BACKUP_DIR):
+        shutil.rmtree(BACKUP_DIR)
+    os.rename(APP_DIR, BACKUP_DIR)
+    try:
+        shutil.move(source_dir, APP_DIR)
+        # If the first start reboots the device, the next boot checks it (--confirm-boot).
+        set_pending(version)
+        ok = service(app_script(), "restart") == 0 and healthy()
+    except Exception as e:
+        print(f"install failed: {e}", file=sys.stderr)
+        ok = False
+    if ok:
+        clear_pending()
         print(f"Previous version kept in {BACKUP_DIR}")
         return
-
-    # The new version did not start. Put the previous one back so the KVM stays reachable.
-    service(app_script(), "stop")
-    os.rename(APP_DIR, os.path.join(work, "failed"))
-    os.rename(BACKUP_DIR, APP_DIR)
-    if service(app_script(), "restart") != 0:
-        raise UpdateError("the new version did not start, and the previous version did not start either")
-    raise UpdateError("the new version did not start; rolled back to the previous version")
+    rollback(os.path.join(work, "failed"))
+    raise UpdateError("the new version did not come up; rolled back to the previous version")
 
 
-def run(args) -> str:
+def acquire_lock():
     lock = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         lock.close()
         raise UpdateError("another update is already running")
+    return lock
+
+
+def run(args) -> str:
+    lock = acquire_lock()
+    # A reboot during an earlier update can leave its work directory behind.
+    for name in os.listdir(WORK_PARENT):
+        if name.startswith(".kvm-update-"):
+            shutil.rmtree(os.path.join(WORK_PARENT, name), ignore_errors=True)
     work = tempfile.mkdtemp(prefix=".kvm-update-", dir=WORK_PARENT)
     try:
+        if args.rollback:
+            rollback(os.path.join(work, "discarded"))
+            return "previous version"
+        if args.confirm_boot:
+            return confirm_boot(work)
         return run_locked(args, work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
         lock.close()
+
+
+def confirm_boot(work: str) -> str:
+    """Called at boot by S95nanokvm while an update is pending."""
+    if not os.path.exists(PENDING_FILE):
+        return "nothing pending"
+    if healthy():
+        clear_pending()
+        return "update confirmed"
+    rollback(os.path.join(work, "failed"))
+    raise UpdateError("the new version did not come up after reboot; rolled back")
 
 
 def run_locked(args, work: str) -> str:
@@ -300,7 +460,7 @@ def run_locked(args, work: str) -> str:
     if args.dry_run:
         print("Dry run: package is valid, nothing installed")
         return version
-    install(source_dir, work)
+    install(source_dir, version, work)
     return version
 
 
@@ -310,15 +470,19 @@ def main() -> int:
     parser.add_argument("--sha512", help="expected SHA-512 (base64 or hex)")
     parser.add_argument("--version", help="release to download, e.g. 2.5.4.1")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--rollback", action="store_true", help="put back the previous version")
+    parser.add_argument("--confirm-boot", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     try:
-        version = run(args)
+        result = run(args)
     except Exception as e:
         print(f"update failed\n{e}", file=sys.stderr)
         return 1
-    if not args.dry_run:
-        print(f"Successfully updated to version: {version}")
+    if args.rollback or args.confirm_boot:
+        print(result)
+    elif not args.dry_run:
+        print(f"Successfully updated to version: {result}")
     return 0
 
 

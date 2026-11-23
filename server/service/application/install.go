@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"syscall"
 
 	"NanoKVM-Server/utils"
 	log "github.com/sirupsen/logrus"
@@ -12,6 +13,11 @@ import (
 var (
 	mutex      sync.Mutex
 	isUpdating bool
+	updateLock *os.File
+
+	// akkijp fork: the same lock file as kvmapp/system/update-nanokvm.py, so the web updates
+	// and the maintenance updater never move /kvmapp and /root/old at the same time.
+	updateLockPath = "/run/nanokvm-update.lock"
 )
 
 func acquireUpdateLock() bool {
@@ -21,6 +27,17 @@ func acquireUpdateLock() bool {
 	if isUpdating {
 		return false
 	}
+	file, err := os.OpenFile(updateLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		log.Errorf("failed to open update lock %s: %v", updateLockPath, err)
+		return false
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		log.Warnf("another update holds %s", updateLockPath)
+		return false
+	}
+	updateLock = file
 	isUpdating = true
 	return true
 }
@@ -28,6 +45,10 @@ func acquireUpdateLock() bool {
 func releaseUpdateLock() {
 	mutex.Lock()
 	defer mutex.Unlock()
+	if updateLock != nil {
+		_ = updateLock.Close()
+		updateLock = nil
+	}
 	isUpdating = false
 }
 

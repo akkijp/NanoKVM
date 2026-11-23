@@ -77,7 +77,12 @@ func TestExtractedPackageNeedsMigrationMarker(t *testing.T) {
 // akkijp fork: walk the online update path the way GitHub serves it. latest.json comes from the
 // "latest" alias, the package from the versioned tag, and both redirect to another host.
 func TestOnlineUpdateFollowsReleaseRedirects(t *testing.T) {
-	pkg, err := os.ReadFile(fourPartArchive(t, "2.5.4.1", "2.5.4.1"))
+	archivePath := fourPartArchive(t, "2.5.4.1", "2.5.4.1")
+	pkg, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, err := inspectUpdateArchive(archivePath, "nanokvm_2.5.4.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +90,7 @@ func TestOnlineUpdateFollowsReleaseRedirects(t *testing.T) {
 	manifest, _ := json.Marshal(Latest{
 		ManifestVersion: 2, Version: "2.5.4.1", Name: "nanokvm_2.5.4.1.tar.gz",
 		Sha512: base64.StdEncoding.EncodeToString(sum[:]), LegacySize: uint64(len(pkg)),
-		SizeBytes: uint64(len(pkg)), UnpackedSizeBytes: 100,
+		SizeBytes: uint64(len(pkg)), UnpackedSizeBytes: built.expandedBytes,
 	})
 
 	assets := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,8 +142,17 @@ func TestOnlineUpdateFollowsReleaseRedirects(t *testing.T) {
 		t.Fatalf("checksum: %v", err)
 	}
 	root := strings.TrimSuffix(latest.Name, ".tar.gz")
-	if _, err := inspectUpdateArchive(target, root); err != nil {
+	info, err := inspectUpdateArchive(target, root)
+	if err != nil {
 		t.Fatalf("inspect: %v", err)
+	}
+	if err := validateExpandedSize(latest, info.expandedBytes); err != nil {
+		t.Fatalf("expanded size: %v", err)
+	}
+	wrong := *latest
+	wrong.UnpackedSizeBytes = info.expandedBytes + 1
+	if err := validateExpandedSize(&wrong, info.expandedBytes); err == nil {
+		t.Fatal("a manifest with the wrong unpacked size must be rejected")
 	}
 	extracted, err := extractUpdateArchive(target, t.TempDir(), root)
 	if err != nil {

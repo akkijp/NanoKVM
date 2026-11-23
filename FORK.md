@@ -23,9 +23,9 @@
 | カスタム更新サーバーとプレビューの経路をふさぐ | 古い設定ファイル（`/etc/kvm/application-update.json`）が残っていても、上流や他所から取らない | `server/service/application/update_server.go`、画面の更新設定 |
 | 画面の版の比較を作り直す（4 つの数字・rc 版の順・大きな数字・読めない版を「最新」と出さない） | semver の比較では 4 つの数字の版を扱えない | `web/src/lib/version.ts` |
 | 保守用の `update-nanokvm.py` を、SHA-512 を確かめて入れる形に書き直す | 上流のものは cdn.sipeed.com の `latest.zip` を確かめずに入れていた。最初の 2.5.4.1 を入れる入口にもなる | `kvmapp/system/update-nanokvm.py` |
-| マイクを切る（録音デバイスを持つサウンドカードを起動時に外す） | NanoKVM は録音を使わない。`/etc/kvm/enable-microphone` を置けば切らない | `kvmapp/system/init.d/S95nanokvm` |
+| マイクを切る（録音デバイスを持つサウンドカードを起動・再起動のたびに外す。結果は `/run/nanokvm-microphone`） | NanoKVM は録音を使わない。`/etc/kvm/enable-microphone` を置けば切らない | `kvmapp/system/init.d/S95nanokvm` |
 | AI 操作機能（picoclaw）の導入と起動を断る | LLM にキーボード・画面を渡す機能で、本体は cdn.sipeed.com から同じ CDN のハッシュで取る | `server/service/picoclaw/fork_disabled.go`、`S95nanokvm` |
-| ビルド環境の取得物を確かめる（ツールチェーンと Go の SHA-256、MaixCDK のコミット固定）。`make` のたびに Dockerfile からビルド環境を作る | 上流は sophon.cn・go.dev から確かめずに取り、MaixCDK は main の最新を使う。古いビルド環境が残ると固定が効かない | `docker/Dockerfile`、`Makefile` |
+| ビルド環境の取得物を確かめる（ツールチェーンと Go の SHA-256、MaixCDK のコミット固定）。`make` のたびに Dockerfile からビルド環境を作る | 上流は sophon.cn・go.dev から確かめずに取り、MaixCDK は main の最新を使い、その Python の依存物もその日の最新を入れる（このフォークは `docker/maixcdk-*.lock` でハッシュ固定）。古いビルド環境が残ると固定が効かない | `docker/Dockerfile`、`Makefile` |
 | GitHub Actions と devcontainer を消す | 上流のリリース手順（main・GHCR の `:latest`・上流の CDN）向けで、このフォークでは使わない。ビルドは nkbuild で行う | `.github/workflows/`、`.devcontainer/` |
 
 ツールチェーン（host-tools.tar.gz）の SHA-256 は、2026-11-22 に取ったものを固定した（初めて取った値を信じる形。上流は値を出していない）。
@@ -45,8 +45,9 @@ make release VERSION=2.5.4.1
 
 ## リリース
 
-1. `akki/2.5.4` に注釈付きタグ `2.5.4.1` を付けて push する。`scripts/verify-release-tag.sh 2.5.4.1` でタグが `akki/2.5.4` の上にあることを確かめる
-2. GitHub Releases の `2.5.4.1` に `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` を上げる。機器は `releases/latest/download/latest.json` を読み、`releases/download/<版>/<名前>` から取る
+1. `akki/2.5.4` に注釈付きタグ `2.5.4.1` を付けて push する
+2. nkbuild の `~/NanoKVM` で `scripts/fork-release.sh 2.5.4.1`。タグが `akki/2.5.4` の上にあることを確かめ、タグのコミットをきれいな状態で取り出してビルドし、成果物を確かめ、最後にタグが動いていないことをもう一度確かめる（公開はしない）
+3. GitHub Releases の `2.5.4.1` に `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` を上げる。機器は `releases/latest/download/latest.json` を読み、`releases/download/<版>/<名前>` から取る
 
 ## 機器へ最初に入れる（上流の版から）
 
@@ -60,6 +61,9 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512>
 ```
 
-サービスを止められなければ何も変えずに終わる。新しい版が起動しなければ、前の版に戻して起動し直し、失敗として終わる。
-前の版は `/root/old` に残る。戻すときは `/etc/init.d/S95nanokvm stop` のあと `/kvmapp` と `/root/old` を入れ替えて `reboot`。
+- 入れる前に、アプリ（`/kvmapp` → `/root/old`）と、新しい版の初回起動が書き換える起動用ファイル（`/etc/init.d`・`/etc/kvm/update-nanokvm.py`・HDMI のドライバー → `/root/old-etc`）を退避する
+- サービスを止められなければ何も変えずに終わる（途中まで止まったら前の版を起こし直す）
+- 新しい版が上がらなければ（2 つのデーモンが動き続け、Web のポートが応答する、を 90 秒待つ）、両方を戻して前の版を起動し、失敗として終わる
+- 初回起動で機器が再起動したときは、`/etc/kvm/update-pending` を見た次の起動で同じ確認をし、だめなら戻す
+- 手で戻すときは `python3 /etc/kvm/update-nanokvm.py --rollback`（ドライバーが変わっていたら再起動する）
 2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`（フォークの Releases から取る）で入る。

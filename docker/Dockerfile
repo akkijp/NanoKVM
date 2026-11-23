@@ -68,13 +68,19 @@ ARG MAIXCDK_COMMIT=83f8b8d456813932526601a40757bdafe452e718
 
 ENV HOME="/home/$DOCKER_USER"
 
+# akkijp fork: install MaixCDK's Python dependencies from hash-pinned lock files instead of
+# resolving requirements.txt at build time.
+COPY docker/maixcdk-build-requirements.lock docker/maixcdk-requirements.lock /tmp/
+
 RUN cd ~ \
     && git clone https://github.com/Sipeed/MaixCDK \
     && cd MaixCDK \
     && git checkout --detach "$MAIXCDK_COMMIT" \
     && python3 -m venv . \
     && . ./bin/activate \
-    && pip install -U -r requirements.txt 
+    && pip install --no-deps --require-hashes -r /tmp/maixcdk-build-requirements.lock \
+    && pip install --no-deps --require-hashes --no-build-isolation -r /tmp/maixcdk-requirements.lock \
+    && pip check
 
 COPY --chown=$DOCKER_UID:$DOCKER_GID . /home/$DOCKER_USER/NanoKVM
 
