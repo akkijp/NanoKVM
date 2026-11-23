@@ -1204,7 +1204,8 @@ class UpdateScriptTest(unittest.TestCase):
     # --- download -------------------------------------------------------------
 
     def serve_releases(self, version, package_path, sha512, size_error=0, unpacked_error=0):
-        """Serve GitHub-like release URLs that redirect to another path, as GitHub does."""
+        """Serve GitHub-like release URLs that redirect, with absolute URLs, to a second server
+        (GitHub sends release assets to another host)."""
         package = pathlib.Path(package_path).read_bytes()
         with tarfile.open(package_path, "r:gz") as tar:
             unpacked = sum(m.size for m in tar if m.isreg())
@@ -1213,7 +1214,35 @@ class UpdateScriptTest(unittest.TestCase):
                                "unpacked_size_bytes": unpacked + unpacked_error}).encode()
         requested = []
 
-        class Handler(http.server.BaseHTTPRequestHandler):
+        def quiet(handler):
+            handler.log_message = lambda *args: None
+            return handler
+
+        class Assets(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                requested.append("assets" + path)
+                bodies = {"/latest.json": manifest, "/package": package}
+                if path not in bodies:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(bodies[path])))
+                self.end_headers()
+                self.wfile.write(bodies[path])
+
+        assets = http.server.HTTPServer(("127.0.0.1", 0), Assets)
+        threading.Thread(target=assets.serve_forever, daemon=True).start()
+        self.addCleanup(assets.server_close)
+        self.addCleanup(assets.shutdown)
+        # "localhost" vs "127.0.0.1": a different host name, as GitHub's asset host is.
+        assets_base = f"http://localhost:{assets.server_port}"
+
+        class Releases(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
@@ -1221,29 +1250,22 @@ class UpdateScriptTest(unittest.TestCase):
                 path = self.path.split("?")[0]
                 requested.append(path)
                 redirects = {
-                    "/rel/latest/download/latest.json": "/assets/latest.json",
-                    f"/rel/download/{version}/latest.json": "/assets/latest.json",
-                    f"/rel/download/{version}/nanokvm_{version}.tar.gz": "/assets/package",
+                    "/rel/latest/download/latest.json": "/latest.json",
+                    f"/rel/download/{version}/latest.json": "/latest.json",
+                    f"/rel/download/{version}/nanokvm_{version}.tar.gz": "/package",
                 }
-                bodies = {"/assets/latest.json": manifest, "/assets/package": package}
-                if path in redirects:
-                    self.send_response(302)
-                    self.send_header("Location", redirects[path])
-                    self.end_headers()
-                elif path in bodies:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("Content-Length", str(len(bodies[path])))
-                    self.end_headers()
-                    self.wfile.write(bodies[path])
-                else:
+                if path not in redirects:
                     self.send_error(404)
+                    return
+                self.send_response(302)
+                self.send_header("Location", assets_base + redirects[path])
+                self.end_headers()
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        self.u.RELEASES = f"http://127.0.0.1:{server.server_port}/rel"
+        releases = http.server.HTTPServer(("127.0.0.1", 0), Releases)
+        threading.Thread(target=releases.serve_forever, daemon=True).start()
+        self.addCleanup(releases.server_close)
+        self.addCleanup(releases.shutdown)
+        self.u.RELEASES = f"http://127.0.0.1:{releases.server_port}/rel"
         return requested
 
     def test_downloads_latest_release(self):
@@ -1252,6 +1274,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual(self.run_update(dry_run=True), "2.5.4.1")
         self.assertIn("/rel/latest/download/latest.json", requested)
         self.assertIn("/rel/download/2.5.4.1/nanokvm_2.5.4.1.tar.gz", requested)
+        self.assertIn("assets/package", requested)  # fetched from the other host, then verified
 
     def test_downloads_pinned_version(self):
         path, digest = self.package("2.5.4.1")

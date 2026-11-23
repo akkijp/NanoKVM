@@ -85,7 +85,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         }
         if (rsp.data.restartPending) {
           setLatestVersion(rsp.data.pendingVersion || '');
-          if (rsp.data.restartPhase === 'confirming' || rsp.data.restartPhase === 'updating') {
+          if (['confirming', 'updating', 'restarting'].includes(rsp.data.restartPhase)) {
             // Another update, or the restart check, is in progress. Look again shortly, but not
             // forever: past the deadline the settings can be closed (the device carries on).
             if (!watchUntilRef.current) watchUntilRef.current = Date.now() + 5 * 60 * 1000;
@@ -93,7 +93,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
               stopWatching(t('settings.update.unconfirmed'));
               return;
             }
-            setStatus(rsp.data.restartPhase === 'updating' ? 'updating' : 'confirming');
+            setStatus(rsp.data.restartPhase === 'confirming' ? 'confirming' : 'updating');
             scheduleRecheck();
           } else {
             // Waiting for the user (retry or manual recovery): stop watching, unlock the settings.
@@ -225,8 +225,17 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         }
         watchRestart(latestVersion);
       })
-      .catch(() => {
-        // The server may already be restarting into the new version.
+      .catch((error: any) => {
+        const code = error?.response?.status;
+        if (code && ![502, 503, 504].includes(code)) {
+          // Refused outright (e.g. by a proxy): nothing started. Say so and unlock.
+          setIsLocked(false);
+          setStatus('failed');
+          setErrMsg(`${t('settings.update.updateFailed')} (HTTP ${code})`);
+          return;
+        }
+        // No answer, or a gateway error: the server may already be restarting into the new
+        // version. Find out by watching.
         watchRestart(latestVersion);
       });
   }

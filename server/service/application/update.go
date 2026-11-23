@@ -1,8 +1,10 @@
 package application
 
 import (
+	"bytes"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,11 +39,13 @@ func (s *Service) Update(c *gin.Context) {
 	}
 
 	// akkijp fork: the version the user saw on the page; the update installs only that one.
-	var req struct {
-		Version string `json:"version"`
+	expected, err := requestedVersion(c)
+	if err != nil {
+		releaseUpdateLock()
+		rsp.ErrRsp(c, -1, err.Error())
+		return
 	}
-	_ = c.ShouldBindJSON(&req) // optional: older pages send no body
-	if err := update(req.Version); err != nil {
+	if err := update(expected); err != nil {
 		releaseUpdateLock()
 		if errors.Is(err, errLatestChanged) {
 			rsp.ErrRsp(c, -5, err.Error())
@@ -77,6 +81,26 @@ func restartServices() {
 }
 
 var errLatestChanged = errors.New("the latest version changed")
+
+// requestedVersion reads the version the page asks for. Only an empty body (an older page) means
+// "whatever is latest"; a body that cannot be parsed, or lacks a valid version, is refused before
+// anything is downloaded, so a truncated request never installs a version nobody saw.
+func requestedVersion(c *gin.Context) (string, error) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 4096))
+	if err != nil {
+		return "", fmt.Errorf("invalid update request: %w", err)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "", nil
+	}
+	var req struct {
+		Version *string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Version == nil || !versionPattern.MatchString(*req.Version) {
+		return "", errors.New("invalid update request: a version is required")
+	}
+	return *req.Version, nil
+}
 
 func update(expected string) error {
 	latest, err := getLatest()

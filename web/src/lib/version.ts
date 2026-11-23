@@ -1,10 +1,11 @@
 // akkijp fork: versions are X.Y.Z or X.Y.Z.N (e.g. 2.5.4.1), optionally followed by a
 // semver pre-release (-rc.1) and build metadata (+meta). semver cannot parse the four-part
-// form, so compare here. A missing fourth part counts as 0. Numeric parts are compared as
-// digit strings, so there is no upper limit. Pre-release ordering follows semver 2.0.0.
+// form, so compare here. A missing fourth part counts as 0. Each numeric part is 1-9 digits
+// (the rule of the server, the updater and scripts/package.sh); numbers are compared as digit
+// strings. Pre-release ordering follows semver 2.0.0.
 // Unparseable input yields null so callers can tell "unknown" apart from "up to date".
 const VERSION_RE =
-  /^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+  /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:\.(\d{1,9}))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 type Parsed = { core: string[]; pre: string[] };
 

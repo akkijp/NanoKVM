@@ -849,3 +849,21 @@ func TestUpdateInstallsOnlyTheVersionTheUserSaw(t *testing.T) {
 		t.Fatal("the lock was not released")
 	}
 }
+
+func TestUpdateRefusesABodyItCannotRead(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	usePendingTestPaths(t)
+	for _, body := range []string{`{"version":"2.5.4.`, `{}`, `{"version":""}`, `{"version":"latest"}`, `garbage`} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		(&Service{}).Update(c)
+		if !strings.Contains(w.Body.String(), "a version is required") {
+			t.Fatalf("body %q: %s", body, w.Body.String())
+		}
+		if !lockIsFree() {
+			t.Fatalf("body %q: the lock was not released", body)
+		}
+	}
+}

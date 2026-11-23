@@ -24,9 +24,14 @@ test('pre-release ordering follows semver', () => {
   assert.equal(versionStatus('2.5.4-rc.1', '2.5.4'), 'outdated');
 });
 
-test('large numeric parts are not rounded', () => {
-  assert.equal(compareVersions('2.5.4.9007199254740993', '2.5.4.9007199254740992'), 1);
+test('numeric parts are compared as numbers, up to 9 digits', () => {
+  assert.equal(compareVersions('2.5.4.999999999', '2.5.4.999999998'), 1);
   assert.equal(compareVersions('2.5.4.0010', '2.5.4.10'), 0);
+});
+
+test('a part longer than 9 digits is unknown, as on the server', () => {
+  assert.equal(compareVersions('2.5.4.1700000000', '2.5.4.2'), null);
+  assert.equal(versionStatus('2.5.4.1700000000', '2.5.4.2'), 'unknown');
 });
 
 test('unparseable versions are unknown, not up to date', () => {
