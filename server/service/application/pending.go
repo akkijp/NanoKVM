@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"NanoKVM-Server/proto"
 
@@ -27,12 +28,42 @@ import (
 //
 // It lives on disk so that a reboot or a killed process does not lose it. The same file and
 // format are used by kvmapp/system/update-nanokvm.py.
-var restartPendingPath = "/etc/kvm/update-restart-pending"
+var (
+	restartPendingPath = "/etc/kvm/update-restart-pending"
+	microphoneStatus   = "/run/nanokvm-microphone" // written by S95nanokvm
+
+	// processStart tells a server started by the restart (after the record was last written)
+	// from the old one still running because the restart failed.
+	processStart = time.Now()
+)
 
 const (
 	phaseSwitching = "switching"
 	phaseInstalled = "installed"
+	// Reported only: an installed update whose new server is running while S95nanokvm waits
+	// for both daemons to stay up before removing the record.
+	phaseConfirming = "confirming"
 )
+
+// reportedPhase is the phase to show: "confirming" when this server started after the record
+// was written (so the restart happened), otherwise the recorded phase.
+func reportedPhase(record pendingRecord) string {
+	if record.Phase != phaseInstalled {
+		return record.Phase
+	}
+	if info, err := os.Stat(restartPendingPath); err == nil && processStart.After(info.ModTime()) {
+		return phaseConfirming
+	}
+	return phaseInstalled
+}
+
+func readMicrophoneStatus() string {
+	data, err := os.ReadFile(microphoneStatus)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
 
 type pendingRecord struct {
 	From  string `json:"from"`
@@ -127,6 +158,10 @@ func (s *Service) RetryRestart(c *gin.Context) {
 	case record.Phase != phaseInstalled:
 		releaseUpdateLock()
 		rsp.ErrRsp(c, -3, "the earlier update stopped while replacing /kvmapp; restarting would run an incomplete app. Recover as described in FORK.md")
+	case reportedPhase(record) == phaseConfirming:
+		// This server is the restarted one; S95nanokvm is only confirming it. Nothing to retry.
+		releaseUpdateLock()
+		rsp.OkRspWithData(c, gin.H{"restarting": false})
 	default:
 		log.Infof("retrying the restart into %s", record.To)
 		rsp.OkRspWithData(c, gin.H{"restarting": true})

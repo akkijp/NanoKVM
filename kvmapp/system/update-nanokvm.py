@@ -472,11 +472,14 @@ def check_not_interrupted() -> None:
     if record is not None:
         current = read_version(APP_DIR)
         whole = all(os.path.isfile(os.path.join(APP_DIR, f)) for f in APP_CORE_FILES)
-        if whole and current in (record.get("from"), record.get("to")) and current and \
-                all(running(d) for d in DAEMONS):
-            # The version that was started (or the previous one, restored by hand or by an older
-            # init script that does not know this record) is running: the update is settled.
-            say(f"{current} is running; clearing the record of the earlier update")
+        # Settled when the daemons running are the ones in /kvmapp (not old processes left by a
+        # failed restart) and /kvmapp is one of the two versions. In the "switching" phase,
+        # also nothing may have been moved to /root/old yet (the web updater moves file by file).
+        settled = (whole and current and current in (record.get("from"), record.get("to"))
+                   and daemons_run_app()
+                   and (record.get("phase") == "installed" or only_dirs(BACKUP_DIR)))
+        if settled:
+            say(f"{current} is running from {APP_DIR}; clearing the record of the earlier update")
             os.remove(RESTART_PENDING)
         elif record.get("phase") == "installed":
             raise UpdateError(
@@ -490,7 +493,7 @@ def check_not_interrupted() -> None:
                 "to work. Nothing was changed. Recover as described in FORK.md"
             )
     missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
-    backup_partial = os.path.lexists(BACKUP_DIR) and not all(
+    backup_partial = os.path.lexists(BACKUP_DIR) and not only_dirs(BACKUP_DIR) and not all(
         os.path.isfile(os.path.join(BACKUP_DIR, f)) for f in APP_CORE_FILES)
     if missing or backup_partial:
         raise UpdateError(
@@ -542,6 +545,40 @@ def remove_stage_mark() -> None:
 
 def drop_stage() -> None:
     shutil.rmtree(STAGE_DIR, ignore_errors=True)
+
+
+def only_dirs(path: str) -> bool:
+    """True when path is missing or holds nothing but directories (what the web updater leaves
+    behind after moving a backup back file by file)."""
+    if not os.path.lexists(path):
+        return True
+    if os.path.islink(path) or not os.path.isdir(path):
+        return False
+    for _, _, files in os.walk(path):
+        if files:
+            return False
+    return True
+
+
+def pids(name: str) -> list:
+    result = subprocess.run(["pidof", name], capture_output=True, text=True)
+    return result.stdout.split() if result.returncode == 0 else []
+
+
+def daemons_run_app() -> bool:
+    """Both daemons run, and they run the binaries in /kvmapp (S95nanokvm starts copies in /tmp,
+    so compare contents): not old processes left behind by a failed restart."""
+    for name, rel in (("NanoKVM-Server", "server/NanoKVM-Server"), ("kvm_system", "kvm_system/kvm_system")):
+        found = pids(name)
+        if not found:
+            return False
+        try:
+            wanted = sha512_of(os.path.join(APP_DIR, rel))
+            if any(sha512_of(f"/proc/{pid}/exe") != wanted for pid in found):
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def read_pending():

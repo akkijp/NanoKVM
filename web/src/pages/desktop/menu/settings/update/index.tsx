@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoadingOutlined, RocketOutlined, SmileOutlined } from '@ant-design/icons';
-import { Button, Divider, Result, Spin } from 'antd';
+import { Alert, Button, Divider, Result, Spin } from 'antd';
 import { useTranslation } from 'react-i18next';
 
 import * as api from '@/api/application.ts';
@@ -19,6 +19,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const [currentVersion, setCurrentVersion] = useState('');
   const [latestVersion, setLatestVersion] = useState('');
   const [errMsg, setErrMsg] = useState('');
+  const [microphone, setMicrophone] = useState('');
   const versionRequestRef = useRef(0);
 
   useEffect(() => {
@@ -43,9 +44,16 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
         // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
         // the restart; if it stopped half-way, only manual recovery is safe.
+        setMicrophone(rsp.data.microphone || '');
         if (rsp.data.restartPending) {
           setLatestVersion(rsp.data.pendingVersion || '');
-          setStatus(rsp.data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
+          if (rsp.data.restartPhase === 'confirming') {
+            // Restarted; the device is checking that both daemons stay up. Look again shortly.
+            setStatus('confirming');
+            setTimeout(checkForUpdates, 5000);
+          } else {
+            setStatus(rsp.data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
+          }
           return;
         }
 
@@ -133,6 +141,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       />
       <Divider className="opacity-50" />
 
+      {/* akkijp fork: a microphone that could not be disabled is shown even though the KVM runs. */}
+      {microphone.startsWith('FAILED') && (
+        <Alert className="mb-4" type="error" showIcon message={t('settings.update.microphoneFailed')} description={microphone} />
+      )}
+
       <div className="flex min-h-[320px] flex-col justify-between">
         {status === 'loading' && (
           <div className="flex justify-center pt-24">
@@ -172,6 +185,13 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
               </Button>
             ]}
           />
+        )}
+
+        {status === 'confirming' && (
+          <div className="flex flex-col items-center justify-center space-y-10 pb-10 pt-24">
+            <Spin size="large" />
+            <span className="text-neutral-500">{t('settings.update.confirming')}</span>
+          </div>
         )}
 
         {status === 'switchIncomplete' && (

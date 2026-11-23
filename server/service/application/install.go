@@ -3,6 +3,7 @@ package application
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -64,8 +65,10 @@ func installPreparedPackage(sourceDir string) error {
 	}
 
 	if err := applyUpdate(sourceDir); err != nil {
-		if readVersionFile(AppDir) == record.From && record.From != "" {
-			_ = clearPending() // the backup was put back; the old version is in place
+		// The backup was moved back file by file; it leaves its directories behind. Only when
+		// nothing but empty directories is left was the restore complete.
+		if readVersionFile(AppDir) == record.From && record.From != "" && removeIfOnlyDirs(BackupDir) {
+			_ = clearPending() // the old version is in place again
 		}
 		return err
 	}
@@ -80,6 +83,23 @@ func installPreparedPackage(sourceDir string) error {
 		return err
 	}
 	return nil
+}
+
+// removeIfOnlyDirs removes dir when it holds nothing but (empty) directories and reports whether
+// dir is gone. Anything else in it is kept.
+func removeIfOnlyDirs(dir string) bool {
+	onlyDirs := true
+	_ = filepath.WalkDir(dir, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil || !entry.IsDir() {
+			onlyDirs = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if !onlyDirs {
+		return false
+	}
+	return os.RemoveAll(dir) == nil
 }
 
 func backupCurrentApp() error {

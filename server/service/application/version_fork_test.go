@@ -211,6 +211,8 @@ func TestPendingUpdateBlocksInstallsAndOnlyTheRestartIsRetried(t *testing.T) {
 	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
 		t.Fatal(err)
 	}
+	processStart = time.Now().Add(-time.Hour) // this server predates the record: the restart failed
+	t.Cleanup(func() { processStart = time.Now() })
 
 	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPending":true`) || !strings.Contains(body, `"restartPhase":"installed"`) {
 		t.Fatalf("version: %s", body)
@@ -219,7 +221,7 @@ func TestPendingUpdateBlocksInstallsAndOnlyTheRestartIsRetried(t *testing.T) {
 		if body := call(handler, http.MethodPost, "/api/application/update"); !strings.Contains(body, "nothing was installed") {
 			t.Fatalf("update while pending: %s", body)
 		}
-		waitFor(t, func() bool { ok := acquireUpdateLock(); releaseUpdateLock(); return ok })
+		waitFor(t, lockIsFree)
 	}
 
 	marker := filepath.Join(dir, "restarted")
@@ -229,12 +231,7 @@ func TestPendingUpdateBlocksInstallsAndOnlyTheRestartIsRetried(t *testing.T) {
 	}
 	waitFor(t, func() bool {
 		_, err := os.Stat(marker)
-		if err != nil {
-			return false
-		}
-		ok := acquireUpdateLock()
-		releaseUpdateLock()
-		return ok
+		return err == nil && lockIsFree()
 	})
 	if !isRestartPending() {
 		t.Fatal("a failed restart keeps the record")
@@ -267,6 +264,16 @@ func TestRetryRestartDoesNothingHalfWayOrWithoutARecord(t *testing.T) {
 	}
 }
 
+// lockIsFree takes the update lock if it can and gives it back; it never releases a lock it did
+// not take, so a handler that forgets to release it is caught.
+func lockIsFree() bool {
+	if !acquireUpdateLock() {
+		return false
+	}
+	releaseUpdateLock()
+	return true
+}
+
 func waitFor(t *testing.T, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -285,5 +292,66 @@ func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	t.Cleanup(func() { restartPendingPath = oldPending })
 	if err := installPreparedPackage(filepath.Join(dir, "unused")); err == nil || !strings.Contains(err.Error(), "record the pending restart") {
 		t.Fatalf("install without a record must not start: %v", err)
+	}
+}
+
+func TestRestartedServerReportsConfirmingAndRetryDoesNothing(t *testing.T) {
+	dir := usePendingTestPaths(t)
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	processStart = time.Now().Add(time.Hour) // started after the record: the restart happened
+	t.Cleanup(func() { processStart = time.Now() })
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"confirming"`) {
+		t.Fatalf("version while confirming: %s", body)
+	}
+	marker := filepath.Join(dir, "restarted")
+	restartCommand = []string{"touch", marker}
+	if body := call((*Service).RetryRestart, http.MethodPost, "/api/application/update/restart"); !strings.Contains(body, `"restarting":false`) {
+		t.Fatalf("retry while confirming: %s", body)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a running, restarted KVM was restarted again")
+	}
+}
+
+func TestVersionReportsMicrophoneStatus(t *testing.T) {
+	usePendingTestPaths(t)
+	old := microphoneStatus
+	microphoneStatus = filepath.Join(t.TempDir(), "mic")
+	t.Cleanup(func() { microphoneStatus = old })
+	if err := os.WriteFile(microphoneStatus, []byte("FAILED: capture still present on card 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"microphone":"FAILED: capture still present on card 0"`) {
+		t.Fatalf("version: %s", body)
+	}
+}
+
+func TestRemoveIfOnlyDirs(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "old")
+	if err := os.MkdirAll(filepath.Join(empty, "server", "dl_lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !removeIfOnlyDirs(empty) {
+		t.Fatal("a tree of empty directories must be removed")
+	}
+	kept := filepath.Join(dir, "kept")
+	if err := os.MkdirAll(filepath.Join(kept, "kvm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kept, "kvm", "fps"), []byte("30"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if removeIfOnlyDirs(kept) {
+		t.Fatal("a tree with files must be kept")
+	}
+	if _, err := os.Stat(filepath.Join(kept, "kvm", "fps")); err != nil {
+		t.Fatal("the remaining file was removed")
 	}
 }

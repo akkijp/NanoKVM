@@ -7,6 +7,9 @@ type GetVersionRsp struct {
 	RestartPending bool   `json:"restartPending,omitempty"`
 	RestartPhase   string `json:"restartPhase,omitempty"`
 	PendingVersion string `json:"pendingVersion,omitempty"`
+	// akkijp fork: /run/nanokvm-microphone ("off", "on", or "FAILED: ..."), so a microphone that
+	// could not be disabled during an update is shown even though the KVM itself runs.
+	Microphone string `json:"microphone,omitempty"`
 }
 
 type GetPreviewRsp struct {

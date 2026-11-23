@@ -657,6 +657,9 @@ const en = {
         queryFailed: 'Get version failed',
         restartPending: 'This version is installed but the device has not restarted into it yet.',
         retryRestart: 'Retry the restart',
+        confirming: 'The new version has started. Checking that it keeps running...',
+        microphoneFailed:
+          'The microphone could not be disabled. Restart the device; if it stays on, see FORK.md (microphone).',
         switchIncomplete:
           'An earlier update stopped while replacing the app. Restarting is not safe; recover as described in FORK.md.',
         updateFailed: 'Update failed. Please retry.',

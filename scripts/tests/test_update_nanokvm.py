@@ -58,6 +58,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.stopped = lambda: True
         self.u.started = lambda: True
         self.u.running = lambda name: False
+        self.u.daemons_run_app = lambda: False
         self.real_migration_reboots = self.u.migration_reboots
         self.u.migration_reboots = lambda: False
         self.u.check_same_filesystem = lambda: None
@@ -451,10 +452,56 @@ class UpdateScriptTest(unittest.TestCase):
         # Power was lost after the record was written; the upstream init script, which does not
         # know the record, started the previous version again.
         pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "switching"}')
-        self.u.running = lambda name: True
+        self.u.daemons_run_app = lambda: True
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
         self.assertEqual(self.installed_version(), "2.5.4.1")
+
+    def test_old_processes_with_new_files_do_not_clear_the_record(self):
+        # A web update replaced /kvmapp, its restart failed, the old daemons still run from /tmp.
+        (pathlib.Path(self.u.APP_DIR) / "version").write_text("2.5.4.1\n")
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "installed"}')
+        self.u.running = lambda name: True
+        self.u.daemons_run_app = lambda: False  # the running binaries are not the ones in /kvmapp
+        path, digest = self.package("2.5.4.2")
+        self.assert_rejected_keeping("not been seen running", file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
+
+    def test_switching_record_with_files_moved_to_backup_is_kept(self):
+        # The web updater had moved part of /kvmapp to /root/old when power was lost.
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "switching"}')
+        (pathlib.Path(self.u.BACKUP_DIR) / "kvm").mkdir(parents=True)
+        (pathlib.Path(self.u.BACKUP_DIR) / "kvm/fps").write_text("30")
+        self.u.daemons_run_app = lambda: True
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "stopped while replacing"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue((pathlib.Path(self.u.BACKUP_DIR) / "kvm/fps").exists())
+
+    def test_backup_of_empty_directories_counts_as_absent(self):
+        # What the web updater leaves after moving a backup back file by file.
+        (pathlib.Path(self.u.BACKUP_DIR) / "server/dl_lib").mkdir(parents=True)
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+
+    def test_daemons_run_app_compares_the_running_binaries(self):
+        u = load()
+        u.APP_DIR = self.u.APP_DIR
+        exe = self.base / "proc-exe"
+        exe.write_text("old")
+        u.pids = lambda name: ["1"]
+        real_sha = u.sha512_of
+        u.sha512_of = lambda path: real_sha(str(exe)) if path.startswith("/proc/") else real_sha(path)
+        self.assertTrue(u.daemons_run_app())  # /kvmapp binaries also say "old"
+        exe.write_text("new")
+        self.assertFalse(u.daemons_run_app())
+        u.pids = lambda name: []
+        self.assertFalse(u.daemons_run_app())
+
+    def assert_rejected_keeping(self, message, **kw):
+        with self.assertRaisesRegex(self.u.UpdateError, message):
+            self.run_update(**kw)
 
     def test_record_is_not_cleared_while_the_daemons_are_down(self):
         pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "installed"}')
@@ -571,10 +618,11 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_half_moved_backup_is_kept(self):
         (pathlib.Path(self.u.BACKUP_DIR) / "server").mkdir(parents=True)  # no version: still being filled
+        (pathlib.Path(self.u.BACKUP_DIR) / "server/NanoKVM-Server").write_text("moved first")
         path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "another update is running"):
             self.run_update(file=path, sha512=digest)
-        self.assertTrue((pathlib.Path(self.u.BACKUP_DIR) / "server").exists())
+        self.assertTrue((pathlib.Path(self.u.BACKUP_DIR) / "server/NanoKVM-Server").exists())
 
     def test_web_update_found_after_stop_aborts_and_restarts(self):
         # The web update was moving files when the stop ran.
@@ -1008,14 +1056,26 @@ sleep() {{ :; }}
                 self.assertLess(order.index("picoclaw"), first_daemon)
 
     def test_record_is_cleared_only_when_both_daemons_stay_up(self):
-        for daemons_up, cleared in ((True, True), (False, False)):
-            with self.subTest(daemons_up=daemons_up):
+        installed = '{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}'
+        cases = (
+            (installed, "2.5.4.1", True, True),       # Go-style JSON, both daemons stay up
+            (installed.replace(":", ": "), "2.5.4.1", True, True),  # Python-style JSON
+            (installed, "2.5.4.1", False, False),     # a daemon died
+            (installed, "2.4.3", True, False),        # another version was started
+            ('{"from":"2.4.3","to":"2.5.4.1","phase":"switching"}', "2.5.4.1", True, False),
+            ("", "2.5.4.1", True, False),             # unreadable record
+        )
+        for content, started_version, daemons_up, cleared in cases:
+            with self.subTest(content=content, version=started_version, daemons_up=daemons_up):
                 fake = self.base / "fs"
                 record = fake / "etc/kvm/update-restart-pending"
                 record.parent.mkdir(parents=True, exist_ok=True)
-                record.write_text("")
+                record.write_text(content)
+                (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
+                (fake / "kvmapp/version").write_text(started_version + "\n")
+                (self.base / "started").unlink(missing_ok=True)
                 self.run_s95("start", pidof_after_start=daemons_up)
-                for _ in range(100):  # the check runs in the background
+                for _ in range(40):  # the check runs in the background
                     if record.exists() != cleared:
                         break
                     __import__("time").sleep(0.05)

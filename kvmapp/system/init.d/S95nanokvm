@@ -148,10 +148,20 @@ start_services() {
     /tmp/kvm_system/kvm_system 9>&- &
     /tmp/server/NanoKVM-Server 9>&- &
     # akkijp fork: an update waiting for this restart counts as running only once both daemons
-    # have stayed up; until then /root/old must not be replaced (see update.go).
-    if [ -f /etc/kvm/update-restart-pending ]; then
-        (sleep 15; pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1 \
-            && rm -f /etc/kvm/update-restart-pending) 9>&- >/dev/null 2>&1 &
+    # have stayed up; until then /root/old must not be replaced (server/service/application/pending.go).
+    # Only an "installed" record for the version just started is cleared; a "switching" or
+    # unreadable record means an earlier update stopped half-way, and is kept for manual recovery.
+    pending=/etc/kvm/update-restart-pending
+    if [ -f "$pending" ]; then
+        pending_to="$(sed -n 's/.*"to": *"\([^"]*\)".*/\1/p' "$pending")"
+        if grep -q '"phase": *"installed"' "$pending" && [ -n "$pending_to" ] \
+            && [ "$pending_to" = "$(cat /kvmapp/version 2>/dev/null)" ]; then
+            (sleep 15; pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1 \
+                && rm -f "$pending") 9>&- >/dev/null 2>&1 &
+        else
+            echo "An earlier update stopped half-way ($pending); see FORK.md" >&2
+            logger -t nanokvm -p user.err "an earlier update stopped half-way; see FORK.md" 2>/dev/null || true
+        fi
     fi
     return "$boot_status"
 }
