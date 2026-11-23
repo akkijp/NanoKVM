@@ -87,17 +87,28 @@ disable_audio_capture() {
 # earlier build started (the server may have launched it with the script under
 # /kvmapp, so do not rely on /etc), and keep it from starting at boot.
 disable_picoclaw() {
+    picoclaw_status=0
     for script in /etc/init.d/S96picoclaw /kvmapp/system/init.d/S96picoclaw; do
         [ -x "$script" ] && "$script" stop >/dev/null 2>&1
     done
     if pidof picoclaw >/dev/null 2>&1; then
         killall -TERM picoclaw 2>/dev/null || true
         wait_for_exit picoclaw 5 || killall -KILL picoclaw 2>/dev/null || true
-        wait_for_exit picoclaw 2 || echo "Failed to stop picoclaw" >&2
+        if ! wait_for_exit picoclaw 2; then
+            echo "Failed to stop picoclaw" >&2
+            logger -t nanokvm -p user.err "picoclaw could not be stopped" 2>/dev/null || true
+            picoclaw_status=1
+        fi
     fi
     if [ -f /etc/init.d/S96picoclaw ]; then
-        mv -f /etc/init.d/S96picoclaw /etc/init.d/disabled-S96picoclaw
+        # An upstream S96picoclaw left in place would start the gateway again later in this boot.
+        if ! mv -f /etc/init.d/S96picoclaw /etc/init.d/disabled-S96picoclaw; then
+            echo "Failed to disable /etc/init.d/S96picoclaw" >&2
+            logger -t nanokvm -p user.err "/etc/init.d/S96picoclaw could not be disabled" 2>/dev/null || true
+            picoclaw_status=1
+        fi
     fi
+    return "$picoclaw_status"
 }
 
 stop_services() {
@@ -111,7 +122,7 @@ start_services() {
     # stays on, the KVM still starts (it is the way in to fix it), but the start reports failure.
     boot_status=0
     disable_audio_capture || boot_status=1
-    disable_picoclaw
+    disable_picoclaw || boot_status=1
 
     if pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1; then
         return "$boot_status"

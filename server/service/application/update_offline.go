@@ -27,6 +27,9 @@ func (s *Service) OfflineUpdate(c *gin.Context) {
 		rsp.ErrRsp(c, -1, "update already in progress")
 		return
 	}
+	if retryPendingRestart(c) {
+		return
+	}
 
 	if err := offlineUpdate(c); err != nil {
 		releaseUpdateLock()

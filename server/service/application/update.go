@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,9 @@ func (s *Service) Update(c *gin.Context) {
 		rsp.ErrRsp(c, -1, "update already in progress")
 		return
 	}
+	if retryPendingRestart(c) {
+		return
+	}
 
 	if err := update(); err != nil {
 		releaseUpdateLock()
@@ -43,18 +47,53 @@ func (s *Service) Update(c *gin.Context) {
 	go restartServices()
 }
 
-var restartCommand = []string{"/kvmapp/system/init.d/S95nanokvm", "restart"}
+var (
+	restartCommand = []string{"/kvmapp/system/init.d/S95nanokvm", "restart"}
+	restartDelay   = 1 * time.Second
+
+	// akkijp fork: set when an update was put in /kvmapp but the restart into it failed, so this
+	// (old) process is still the one running. /kvmapp/version then names a version that is not
+	// running, and /root/old holds the only version known to work: no new install may happen
+	// until the restart has been retried.
+	restartPendingMu sync.Mutex
+	restartPending   bool
+)
+
+func isRestartPending() bool {
+	restartPendingMu.Lock()
+	defer restartPendingMu.Unlock()
+	return restartPending
+}
+
+func setRestartPending(pending bool) {
+	restartPendingMu.Lock()
+	defer restartPendingMu.Unlock()
+	restartPending = pending
+}
 
 func restartServices() {
 	// Let the HTTP response reach the client before stopping the server.
-	time.Sleep(1 * time.Second)
+	time.Sleep(restartDelay)
 
+	setRestartPending(true) // cleared only by the process dying, i.e. a successful restart
 	if err := exec.Command(restartCommand[0], restartCommand[1:]...).Run(); err != nil {
 		log.Errorf("failed to restart services after update: %v", err)
 		// akkijp fork: this process keeps running, so let other updates (including the
-		// maintenance updater, which shares the lock file) proceed.
+		// maintenance updater, which shares the lock file) proceed; they retry the restart.
 		releaseUpdateLock()
 	}
+}
+
+// retryPendingRestart answers an update request while a previous update waits for its restart:
+// it retries only the restart and installs nothing. It reports whether it handled the request.
+func retryPendingRestart(c *gin.Context) bool {
+	if !isRestartPending() {
+		return false
+	}
+	var rsp proto.Response
+	rsp.ErrRsp(c, -2, "the previous update is installed but not running yet; restarting it now, try again afterwards")
+	go restartServices()
+	return true
 }
 
 func update() error {

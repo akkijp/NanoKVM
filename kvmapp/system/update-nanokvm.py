@@ -456,7 +456,8 @@ def check_not_interrupted() -> None:
     half-done: /root/old may then be the only copy. (Upstream web updaters do not share our lock,
     so this is checked before stopping and again after.)"""
     missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
-    backup_partial = os.path.isdir(BACKUP_DIR) and not os.path.isfile(os.path.join(BACKUP_DIR, "version"))
+    backup_partial = os.path.lexists(BACKUP_DIR) and not all(
+        os.path.isfile(os.path.join(BACKUP_DIR, f)) for f in APP_CORE_FILES)
     if missing or backup_partial:
         raise UpdateError(
             f"{APP_DIR} or {BACKUP_DIR} is incomplete (another update is running, or an earlier one "
@@ -537,15 +538,19 @@ def mount_points() -> list:
         return []
 
 
-def check_backup_removable() -> None:
-    """The switch deletes the previous /root/old. Refuse if that would delete across a mount
-    (e.g. a backup disk mounted there) or follow a link."""
-    if not os.path.lexists(BACKUP_DIR):
+def check_removable(path: str) -> None:
+    """Refuse to delete a tree recursively if that would cross a mount or follow a link."""
+    if not os.path.lexists(path):
         return
-    real = os.path.realpath(BACKUP_DIR)
-    if os.path.islink(BACKUP_DIR) or os.path.ismount(BACKUP_DIR) or any(
+    real = os.path.realpath(path)
+    if os.path.islink(path) or os.path.ismount(path) or any(
             m == real or m.startswith(real + "/") for m in mount_points()):
-        raise UpdateError(f"{BACKUP_DIR} is a link or has a mount in it; nothing was changed")
+        raise UpdateError(f"{path} is a link or has a mount in it; nothing was changed")
+
+
+def check_backup_removable() -> None:
+    """The switch deletes the previous /root/old (e.g. a backup disk mounted there must survive)."""
+    check_removable(BACKUP_DIR)
 
 
 def check_same_filesystem() -> None:
@@ -665,8 +670,8 @@ def run_locked(args, work: str) -> str:
         # Left by a run that stopped before the switch. Keep it if the switch itself was cut short,
         # and never touch a /kvmapp.new this script did not create.
         check_not_interrupted()
-        if (os.path.islink(STAGE_DIR) or os.path.ismount(STAGE_DIR)
-                or not os.path.isfile(os.path.join(STAGE_DIR, STAGE_MARK_NAME))
+        check_removable(STAGE_DIR)
+        if (not os.path.isfile(os.path.join(STAGE_DIR, STAGE_MARK_NAME))
                 or (args.file and os.path.realpath(args.file).startswith(os.path.realpath(STAGE_DIR) + os.sep))):
             raise UpdateError(f"{STAGE_DIR} exists and was not left by this updater; move it away first")
         shutil.rmtree(STAGE_DIR)

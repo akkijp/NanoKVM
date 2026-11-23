@@ -44,6 +44,12 @@ var (
 func (s *Service) GetVersion(c *gin.Context) {
 	var rsp proto.Response
 
+	// akkijp fork: /kvmapp/version names an installed update that is not running yet.
+	if isRestartPending() {
+		rsp.ErrRsp(c, -2, "an installed update is waiting for its restart")
+		return
+	}
+
 	// current version
 	currentVersion := "1.0.0"
 

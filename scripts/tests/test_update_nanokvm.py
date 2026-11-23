@@ -68,6 +68,14 @@ class UpdateScriptTest(unittest.TestCase):
             (app / core).write_text("old")
         write_script(app / "system/init.d/S95nanokvm", OK_SCRIPT)
 
+    def complete_app(self, path, version="2.4.2"):
+        path = pathlib.Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "version").write_text(version + "\n")
+        for core in ("server/NanoKVM-Server", "kvm_system/kvm_system"):
+            (path / core).parent.mkdir(parents=True, exist_ok=True)
+            (path / core).write_text("x")
+
     def tearDown(self):
         self.tmp.cleanup()
 
@@ -361,8 +369,8 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_backup_with_a_mount_inside_is_not_deleted(self):
         old = pathlib.Path(self.u.BACKUP_DIR)
-        (old / "disk").mkdir(parents=True)
-        (old / "version").write_text("2.4.2\n")
+        self.complete_app(old)
+        (old / "disk").mkdir()
         (old / "disk/important").write_text("x")
         pathlib.Path(self.u.MOUNTS).write_text(f"/dev/sda1 {os.path.realpath(old)}/disk ext4 rw 0 0\n")
         path, digest = self.package("2.5.4.1")
@@ -372,8 +380,7 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_backup_that_is_a_link_is_not_followed(self):
         target = self.base / "elsewhere"
-        target.mkdir()
-        (target / "version").write_text("2.4.2\n")
+        self.complete_app(target)
         os.symlink(target, self.u.BACKUP_DIR)
         path, digest = self.package("2.5.4.1")
         self.assert_rejected("is a link", file=path, sha512=digest)
@@ -441,6 +448,29 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assertEqual(self.calls(), "")
 
+    def test_backup_with_only_its_version_file_left_is_kept(self):
+        # An earlier rmtree of /root/old was cut short after the binaries, before the version file.
+        old = pathlib.Path(self.u.BACKUP_DIR)
+        old.mkdir()
+        (old / "version").write_text("2.4.2\n")
+        (old / "kvm_system").mkdir()
+        (old / "kvm_system/kvm_system").write_text("x")
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "another update is running"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue((old / "kvm_system/kvm_system").exists())
+        self.assertEqual(self.calls(), "")
+
+    def test_stage_with_a_mount_inside_is_not_deleted(self):
+        stage = pathlib.Path(self.u.STAGE_DIR)
+        (stage / "disk").mkdir(parents=True)
+        (stage / self.u.STAGE_MARK_NAME).write_text("")
+        (stage / "disk/evidence").write_text("x")
+        pathlib.Path(self.u.MOUNTS).write_text(f"/dev/sdb1 {os.path.realpath(stage)}/disk ext4 rw 0 0\n")
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("has a mount in it", file=path, sha512=digest)
+        self.assertTrue((stage / "disk/evidence").exists())
+
     def test_half_moved_backup_is_kept(self):
         (pathlib.Path(self.u.BACKUP_DIR) / "server").mkdir(parents=True)  # no version: still being filled
         path, digest = self.package("2.5.4.1")
@@ -486,8 +516,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.u.STAGE_DIR))
 
     def test_failed_backup_removal_keeps_old_app(self):
-        pathlib.Path(self.u.BACKUP_DIR).mkdir()
-        (pathlib.Path(self.u.BACKUP_DIR) / "version").write_text("2.4.2\n")  # a complete earlier backup
+        self.complete_app(self.u.BACKUP_DIR)  # a complete earlier backup
         real_rmtree = self.u.shutil.rmtree
 
         def rmtree(path, *a, **kw):
@@ -829,7 +858,7 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text(), "")
         self.assertEqual(status, "on")
 
-    def run_s95(self, action, mic_fails=False):
+    def run_s95(self, action, mic_fails=False, picoclaw_fails=False):
         """Run the real S95nanokvm branch with everything that touches the device stubbed out,
         recording the order of the fork's boot steps and the daemon starts."""
         log = self.base / "order.log"
@@ -847,7 +876,7 @@ class MicrophoneTest(unittest.TestCase):
         stubs = f"""
 record() {{ echo "$1" >> {log}; }}
 disable_audio_capture() {{ record mic; return {1 if mic_fails else 0}; }}
-disable_picoclaw() {{ record picoclaw; }}
+disable_picoclaw() {{ record picoclaw; return {1 if picoclaw_fails else 0}; }}
 pidof() {{ return 1; }}
 killall() {{ :; }}
 iptables() {{ return 0; }}
@@ -861,7 +890,7 @@ reboot() {{ record reboot; }}
         head, case = text.split('case "$1" in', 1)
         script = head + stubs + 'case "$1" in' + case
         result = subprocess.run(["sh", "-c", script, "S95nanokvm", action], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1 if mic_fails else 0, result.stderr)
+        self.assertEqual(result.returncode, 1 if (mic_fails or picoclaw_fails) else 0, result.stderr)
         if action == "start":  # written into the fake /boot, not the host's (macOS sh prints "-n" literally)
             self.assertTrue((fake / "boot/hostname.prefix").read_text().strip().endswith("kvm"))
         return log.read_text().split() if log.exists() else []
@@ -877,6 +906,24 @@ reboot() {{ record reboot; }}
                 first_daemon = min(order.index("daemon-kvm_system"), order.index("daemon-NanoKVM-Server"))
                 self.assertLess(order.index("mic"), first_daemon)
                 self.assertLess(order.index("picoclaw"), first_daemon)
+
+    def test_picoclaw_failure_fails_the_start(self):
+        for action in ("start", "restart"):
+            with self.subTest(action=action):
+                (self.base / "order.log").unlink(missing_ok=True)
+                order = self.run_s95(action, picoclaw_fails=True)  # asserts exit status 1
+                self.assertIn("daemon-NanoKVM-Server", order)
+
+    def test_disable_picoclaw_reports_a_failed_disable(self):
+        etc = self.base / "etc/init.d"
+        etc.mkdir(parents=True)
+        (etc / "S96picoclaw").write_text("#!/bin/sh\n")
+        body = s95_function("wait_for_exit") + s95_function("disable_picoclaw")
+        body = body.replace("/etc/init.d", str(etc)).replace("/kvmapp/", f"{self.base}/kvmapp/")
+        script = "pidof() { return 1; }\nmv() { return 1; }\n" + body + "\ndisable_picoclaw\n"
+        result = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Failed to disable", result.stderr)
 
     def test_start_while_running_still_reports_the_microphone(self):
         log = self.base / "order.log"

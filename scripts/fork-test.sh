@@ -5,6 +5,7 @@
 #   - The maintenance updater tests (python3).
 #   - Web: version helper tests, type check and production build.
 #   - The builder image from docker/Dockerfile (checksums of the pinned downloads, SDK build).
+#   - A full release build with a four-part version, checked like a release (FORK_TEST_QUICK=1 skips it).
 # The source is mounted read-only and copied inside each container, and the
 # containers run as the calling user, so nothing in the checkout changes owner
 # or gains build output (a later `make release` still works).
@@ -41,4 +42,19 @@ echo "== Web"
   pnpm exec tsc --noEmit -p .
   pnpm build >/dev/null
 '
+if [ "${FORK_TEST_QUICK:-}" != 1 ]; then
+    # What actually ships: the RISC-V server, kvm_system and kvm_vision built in the builder image,
+    # packaged with a four-part version and checked like a release. In a throwaway copy, with a
+    # builder image of its own.
+    echo "== Release build (set FORK_TEST_QUICK=1 to skip)"
+    COPY="$(mktemp -d)/NanoKVM"
+    IMAGE="nanokvm-builder-forktest-$$"
+    trap 'docker image rm -f "$IMAGE" >/dev/null 2>&1; rm -rf "$(dirname "$COPY")"' EXIT
+    mkdir -p "$COPY"
+    (cd "$ROOT" && tar --exclude=./build --exclude=./web/node_modules --exclude=./web/dist -cf - .) | tar -C "$COPY" -xf -
+    (cd "$COPY" && make release VERSION=0.0.0.1 DOCKER_TTY= IMAGE_NAME="$IMAGE") > /tmp/fork-test-release.log 2>&1 \
+        || { tail -40 /tmp/fork-test-release.log; exit 1; }
+    "$COPY/scripts/verify-release-assets.sh" "$COPY/build/release" 0.0.0.1
+fi
+
 echo "== ALL OK"

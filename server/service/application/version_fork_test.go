@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -173,5 +174,54 @@ func TestFailedRestartReleasesUpdateLock(t *testing.T) {
 	defer other.Close()
 	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal("the maintenance updater still cannot take the lock after a failed restart")
+	}
+}
+
+func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldPath, oldCmd, oldDelay := updateLockPath, restartCommand, restartDelay
+	dir := t.TempDir()
+	updateLockPath = filepath.Join(dir, "update.lock")
+	restartCommand = []string{"false"}
+	restartDelay = 0
+	defer func() {
+		updateLockPath, restartCommand, restartDelay = oldPath, oldCmd, oldDelay
+		setRestartPending(false)
+	}()
+
+	if !acquireUpdateLock() {
+		t.Fatal("could not take the update lock")
+	}
+	restartServices() // fails: the old process keeps running
+	if !isRestartPending() {
+		t.Fatal("a failed restart must be remembered")
+	}
+
+	// A new update request retries the restart and installs nothing.
+	marker := filepath.Join(dir, "restarted")
+	restartCommand = []string{"touch", marker}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", nil)
+	(&Service{}).Update(c)
+	if !strings.Contains(w.Body.String(), "not running yet") {
+		t.Fatalf("update during a pending restart: %s", w.Body.String())
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the restart was not retried")
+	}
+
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/application/version", nil)
+	(&Service{}).GetVersion(c)
+	if !strings.Contains(w.Body.String(), "waiting for its restart") {
+		t.Fatalf("version during a pending restart: %s", w.Body.String())
 	}
 }
