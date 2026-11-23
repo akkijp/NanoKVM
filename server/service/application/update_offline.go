@@ -42,7 +42,7 @@ func (s *Service) OfflineUpdate(c *gin.Context) {
 	rsp.OkRsp(c)
 	log.Debugf("offline update application success")
 
-	go restartServices()
+	startRestart()
 }
 
 func offlineUpdate(c *gin.Context) error {

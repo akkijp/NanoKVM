@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -58,13 +59,24 @@ func (s *Service) Update(c *gin.Context) {
 	rsp.OkRsp(c)
 	log.Debugf("update application success")
 
-	go restartServices()
+	startRestart()
 }
 
 var (
 	restartCommand = []string{"/kvmapp/system/init.d/S95nanokvm", "restart"}
 	restartDelay   = 1 * time.Second
 )
+
+// restarts counts the restarts started in the background, so tests can wait for them.
+var restarts sync.WaitGroup
+
+func startRestart() {
+	restarts.Add(1)
+	go func() {
+		defer restarts.Done()
+		restartServices()
+	}()
+}
 
 func restartServices() {
 	// Let the HTTP response reach the client before stopping the server.

@@ -884,6 +884,15 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     # elsewhere must not start from a half-switched /kvmapp. The restart below comes after.
     service_lock = lock_service_operations()
     try:
+        # A start that slipped in between the stop and this lock would leave the old daemons
+        # running while /kvmapp is replaced under them. Check again, now that no start can.
+        if any(running(d) for d in DAEMONS):
+            service_lock.close()
+            drop_stage()
+            raise UpdateError(
+                "the service was started again after it had been stopped; nothing was changed "
+                "(the previous version keeps running). Try the update again"
+            )
         install_locked(version, reboots, previous, service_lock)
     finally:
         service_lock.close()

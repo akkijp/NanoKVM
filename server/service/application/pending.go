@@ -293,6 +293,6 @@ func (s *Service) RetryRestart(c *gin.Context) {
 		log.Infof("retrying the restart into %s", record.To)
 		setRestartUnderWay(true)
 		rsp.OkRspWithData(c, gin.H{"restarting": true})
-		go restartServices()
+		startRestart()
 	}
 }

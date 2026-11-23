@@ -7,8 +7,8 @@ set -euo pipefail
 TAG="${1:-}"
 EXPECTED_SHA="${2:-}"
 
-if ! echo "$TAG" | grep -qE '^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$'; then
-    echo "[ERROR] invalid tag '$TAG', expected MAJOR.MINOR.PATCH.N" >&2
+if ! echo "$TAG" | grep -qE '^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.[1-9][0-9]{0,8}$'; then
+    echo "[ERROR] invalid tag '$TAG', expected MAJOR.MINOR.PATCH.N without leading zeros (N >= 1)" >&2
     exit 1
 fi
 if [ -n "$EXPECTED_SHA" ] && ! echo "$EXPECTED_SHA" | grep -qE '^[0-9a-f]{40}$'; then

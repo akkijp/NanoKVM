@@ -9,9 +9,13 @@
 # The source is mounted read-only and copied inside each container, and the
 # containers run as the calling user, so nothing in the checkout changes owner
 # or gains build output (a later `make release` still works).
+# In a git checkout, every stage runs on a temporary worktree of HEAD, so what passes is exactly
+# what is committed (an uncommitted fix cannot make a broken commit pass). Outside git (a plain
+# copy), the copy itself is tested and the release stage is skipped.
 # Usage: scripts/fork-test.sh   (needs docker; run on nkbuild)
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$CHECKOUT"
 . "$ROOT/scripts/fork-env.sh"
 LOGS="$(mktemp -d)"  # per run: a root-owned leftover from an accidental sudo run cannot block it
 COPY=""
@@ -21,7 +25,7 @@ cleanup() {
     set +e  # finish the cleanup whatever fails in it
     [ -n "$IMAGE" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
     if [ -n "$COPY" ]; then
-        git -C "$ROOT" worktree remove --force "$COPY" >/dev/null 2>&1
+        git -C "$CHECKOUT" worktree remove --force "$COPY" >/dev/null 2>&1
         rm -rf "$(dirname "$COPY")"
     fi
     if [ "$status" -eq 0 ]; then
@@ -32,6 +36,18 @@ cleanup() {
     exit "$status"
 }
 trap cleanup EXIT
+if git -C "$CHECKOUT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    if [ -n "$(git -C "$CHECKOUT" status --porcelain)" ]; then
+        echo "[WARN] uncommitted changes are not tested; commit them first" >&2
+    fi
+    COPY="$(mktemp -d)/NanoKVM"
+    git -C "$CHECKOUT" worktree add -q --detach "$COPY" HEAD
+    ROOT="$COPY"
+    echo "== Testing $(git -C "$ROOT" rev-parse --short HEAD)"
+else
+    echo "[WARN] not a git checkout: testing the files as they are, without the release stage" >&2
+    FORK_TEST_QUICK=1
+fi
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Builder image (docker/Dockerfile: pinned downloads, SDK build; cached layers are reused)"
@@ -46,6 +62,7 @@ echo "== Go"
   export CGO_LDFLAGS=-L/tmp/stub LD_LIBRARY_PATH=/tmp/stub
   go vet ./service/application/ ./service/picoclaw/ ./config/
   go test ./...
+  go test -race -count=2 ./service/application/  # the update code runs restarts in the background
 '
 
 echo "== kvm_system record parser (C++)"
@@ -72,18 +89,8 @@ if [ "${FORK_TEST_QUICK:-}" != 1 ]; then
     # packaged with a four-part version and checked like a release. In a throwaway copy, with a
     # builder image of its own.
     echo "== Release build (set FORK_TEST_QUICK=1 to skip)"
-    # From the committed tree (a temporary worktree of HEAD), like a release from a tag: files that
-    # exist only in the working copy, or earlier build output, cannot make it pass.
-    if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null; then
-        echo "[ERROR] the release stage needs a git checkout (or set FORK_TEST_QUICK=1)" >&2
-        exit 1
-    fi
-    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
-        echo "[WARN] uncommitted changes are not part of the release stage" >&2
-    fi
-    COPY="$(mktemp -d)/NanoKVM"
+    # The same worktree of HEAD as every stage above, with a builder image of its own.
     IMAGE="nanokvm-builder-forktest-$$"
-    git -C "$ROOT" worktree add -q --detach "$COPY" HEAD
     (cd "$COPY" && make release VERSION=0.0.0.1 DOCKER_TTY= IMAGE_NAME="$IMAGE") > "$LOGS/release.log" 2>&1 \
         || { tail -40 "$LOGS/release.log"; exit 1; }
     "$COPY/scripts/verify-release-assets.sh" "$COPY/build/release" 0.0.0.1

@@ -200,6 +200,7 @@ func usePendingTestPaths(t *testing.T) string {
 	restartCommand = []string{"false"}
 	restartDelay = 0
 	t.Cleanup(func() {
+		restarts.Wait() // a background restart must not read the settings while they are put back
 		releaseUpdateLock()
 		updateLockPath, restartCommand, restartDelay, restartPendingPath = oldPath, oldCmd, oldDelay, oldPending
 	})
@@ -1044,16 +1045,17 @@ func TestInstallWaitsForTheServiceLock(t *testing.T) {
 	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	sawRecordWhileHeld := false
+	sawRecordWhileHeld := make(chan bool, 1)
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		_, sawRecordWhileHeld = readPending()
+		_, pending := readPending()
+		sawRecordWhileHeld <- pending
 		_ = held.Close()
 	}()
 	if err := installPreparedPackage(filepath.Join(dir, "new")); err != nil {
 		t.Fatal(err)
 	}
-	if sawRecordWhileHeld {
+	if <-sawRecordWhileHeld {
 		t.Fatal("the switch began while S95nanokvm held its lock")
 	}
 	if readVersionFile(installAppDir) != "2.5.4.2" {
@@ -1062,41 +1064,68 @@ func TestInstallWaitsForTheServiceLock(t *testing.T) {
 }
 
 func TestRuntimeTempFilesDoNotBreakTheMove(t *testing.T) {
-	dir := t.TempDir()
-	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
-	for path, content := range map[string]string{
-		filepath.Join(src, "kvm", "state"):             "1",
-		filepath.Join(src, "kvm", ".state.tmp.ABC123"): "0",
-		filepath.Join(src, "server", "NanoKVM-Server"): "bin",
-	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	setup := func(t *testing.T) (string, string) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		for path, content := range map[string]string{
+			filepath.Join(src, "kvm", "state"):             "1",
+			filepath.Join(src, "kvm", ".state.tmp.ABC123"): "0",
+			filepath.Join(src, "server", "NanoKVM-Server"): "bin",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return src, dst
+	}
+
+	t.Run("a temp file that stays is not moved", func(t *testing.T) {
+		src, dst := setup(t)
+		if err := moveTree(src, dst); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if _, err := os.Lstat(filepath.Join(dst, "kvm", ".state.tmp.ABC123")); !os.IsNotExist(err) {
+			t.Fatalf("the temp file was moved (%v)", err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dst, "server", "NanoKVM-Server")); string(got) != "bin" {
+			t.Fatal("a real file was not moved")
+		}
+	})
+
+	t.Run("a temp file that vanishes after the listing is not an error", func(t *testing.T) {
+		src, dst := setup(t)
+		oldMove := moveFile
+		t.Cleanup(func() { moveFile = oldMove })
+		moveFile = func(from, to string) error {
+			// The app renames its temp file away just as the walk gets to "kvm".
+			_ = os.Rename(filepath.Join(src, "kvm", ".state.tmp.ABC123"), filepath.Join(src, "kvm", "state"))
+			return oldMove(from, to)
+		}
+		if err := moveTree(src, dst); err != nil {
 			t.Fatal(err)
 		}
-	}
-	// The temporary file is renamed away by the running app while the tree is walked.
-	_ = os.Rename(filepath.Join(src, "kvm", ".state.tmp.ABC123"), filepath.Join(src, "kvm", "state"))
-	if err := moveTree(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dst, "server", "NanoKVM-Server")); string(got) != "bin" {
-		t.Fatal("a real file was not moved")
-	}
-	files, _ := listFiles(dst)
-	for rel := range files {
-		if runtimeTemp(rel) {
-			t.Fatalf("runtime temp file listed: %s", rel)
+		if _, err := os.Lstat(filepath.Join(dst, "server", "NanoKVM-Server")); err != nil {
+			t.Fatal("a real file was not moved")
 		}
-	}
-	// A real file that vanishes is still an error.
-	if err := os.MkdirAll(filepath.Join(dir, "src2"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := moveTree(filepath.Join(dir, "missing"), filepath.Join(dir, "dst2")); err == nil {
-		t.Fatal("moving a missing tree must fail")
-	}
+	})
+
+	t.Run("a real file that vanishes is an error", func(t *testing.T) {
+		src, dst := setup(t)
+		oldMove := moveFile
+		t.Cleanup(func() { moveFile = oldMove })
+		moveFile = func(from, to string) error {
+			if strings.HasSuffix(from, "NanoKVM-Server") {
+				_ = os.Remove(from)
+			}
+			return oldMove(from, to)
+		}
+		if err := moveTree(src, dst); err == nil {
+			t.Fatal("a vanished real file must fail the move")
+		}
+	})
 }
 
 func TestOfflineUpdateWithTheRightSHA256Installs(t *testing.T) {
@@ -1108,6 +1137,7 @@ func TestOfflineUpdateWithTheRightSHA256Installs(t *testing.T) {
 	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
 	restartCommand = []string{"true"}
 	t.Cleanup(func() {
+		restarts.Wait()
 		installAppDir, installBackupDir, installCacheDir, sentinelPath, installTrashDir = oldApp, oldBackup, oldCache, oldSentinel, oldTrash
 		setRestartUnderWay(false)
 	})

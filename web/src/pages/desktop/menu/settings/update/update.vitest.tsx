@@ -92,7 +92,10 @@ test('a chosen package is sent once with its SHA-256 and its restart is watched'
   );
   expect(setIsLocked).toHaveBeenLastCalledWith(true);
   expect(fetchMock).toHaveBeenCalledTimes(1);
-});
+
+  // After the accepted POST the page really watches: the next version query comes ~5 s later.
+  await waitFor(() => expect(api.getVersion).toHaveBeenCalledTimes(3), { timeout: 8000 });
+}, 15000);
 
 test('an update refused because a newer release appeared leaves nothing to resume', async () => {
   const outdated = {

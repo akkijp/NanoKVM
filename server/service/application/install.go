@@ -231,9 +231,12 @@ func moveTree(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
 		}
-		return utils.MoveFile(path, target)
+		return moveFile(path, target)
 	})
 }
+
+// moveFile is utils.MoveFile; a variable so tests can interleave with a running app.
+var moveFile = utils.MoveFile
 
 // installTrashDir is where the previous backup is renamed to before it is removed; the same place
 // as kvmapp/system/update-nanokvm.py uses, on the same filesystem as /root/old.

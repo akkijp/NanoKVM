@@ -855,6 +855,22 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_rejected("previous version was started again", file=path, sha512=digest)
         self.assertIn("etc-S95 restart", self.calls())
 
+    def test_a_start_that_slipped_in_after_the_stop_aborts_the_switch(self):
+        state = {"locked": False}
+        real_lock = self.u.lock_service_operations
+
+        def lock():
+            state["locked"] = True
+            return real_lock()
+
+        self.u.lock_service_operations = lock
+        # The daemons are gone at the stop, but running again once the lock is taken.
+        self.u.running = lambda name: state["locked"]
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("started again after it had been stopped", file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
+        self.assertFalse(os.path.exists(self.u.STAGE_DIR))
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)

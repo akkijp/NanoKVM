@@ -83,10 +83,10 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 3. `/kvmapp` 自体が無く、`/root/old/version` が `from` と同じで、`/root/old/server/NanoKVM-Server` と `/root/old/kvm_system/kvm_system` があるときに限り、手で戻せる:
 
    ```bash
-   mv /root/old /kvmapp
-   rm /etc/kvm/update-restart-pending
-   reboot
+   mv /root/old /kvmapp && sync && rm /etc/kvm/update-restart-pending && sync && reboot
    ```
+
+   （1 つでも失敗したらそこで止まる。`mv` が失敗したら記録を消さずに、microSD の書き直しへ）
 
 4. それ以外（`/kvmapp` が残っている＝画面の更新がファイル単位で動かしていた、`/root/old` が途中まで、版が合わない）は、microSD を書き直す
 
