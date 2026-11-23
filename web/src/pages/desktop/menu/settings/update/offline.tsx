@@ -43,7 +43,8 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg }: UpdatePro
     if (!file) return;
 
     const checksum = sha256Checksum.trim();
-    if (checksum && !/^[a-fA-F0-9]{64}$/.test(checksum)) {
+    // akkijp fork: the SHA-256 from the release's sha256.txt is required.
+    if (!/^[a-fA-F0-9]{64}$/.test(checksum)) {
       setStatus('failed');
       setErrMsg(t('settings.update.offline.invalidChecksum'));
       return;
@@ -110,7 +111,7 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg }: UpdatePro
 
               <a
                 className="flex items-center text-neutral-500 hover:text-blue-500"
-                href="https://github.com/sipeed/NanoKVM/releases"
+                href="https://github.com/akkijp/NanoKVM/releases"
                 target="_blank"
               >
                 <ExternalLinkIcon size={15} />

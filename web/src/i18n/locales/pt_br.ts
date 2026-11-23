@@ -691,7 +691,7 @@ const pt_br = {
           title: 'Atualizações off-line',
           desc: 'Atualização através do pacote de instalação local',
           upload: 'Upload',
-          checksumPlaceholder: 'Soma de verificação SHA-256 (opcional)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'A soma de verificação SHA-256 deve conter 64 caracteres hexadecimais.',
           checksumMismatch: 'A verificação SHA-256 falhou. O pacote pode estar corrompido.',
           invalidName: 'Formato de nome de arquivo inválido. Faça download das versões do GitHub.',

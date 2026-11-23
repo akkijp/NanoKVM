@@ -689,7 +689,7 @@ const tr = {
           title: 'Çevrimdışı Güncellemeler',
           desc: 'Yerel kurulum paketi aracılığıyla güncelleme',
           upload: 'Yükle',
-          checksumPlaceholder: 'SHA-256 sağlama toplamı (isteğe bağlı)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'SHA-256 sağlama toplamı 64 onaltılık karakter içermelidir.',
           checksumMismatch: 'SHA-256 doğrulaması başarısız oldu. Paket bozulmuş olabilir.',
           invalidName: 'Geçersiz dosya adı biçimi. Lütfen GitHub sürümlerinden indirin.',

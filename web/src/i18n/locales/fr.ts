@@ -699,7 +699,7 @@ const fr = {
           title: 'Mises à jour hors ligne',
           desc: "Mise à jour via le package d'installation local",
           upload: 'Téléverser',
-          checksumPlaceholder: 'Somme de contrôle SHA-256 (facultative)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'La somme de contrôle SHA-256 doit contenir 64 caractères hexadécimaux.',
           checksumMismatch: 'La vérification SHA-256 a échoué. Le paquet est peut-être endommagé.',
           invalidName:

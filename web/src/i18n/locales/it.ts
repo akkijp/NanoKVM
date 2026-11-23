@@ -695,7 +695,7 @@ const it = {
           title: 'Aggiornamenti offline',
           desc: 'Aggiornamento tramite pacchetto di installazione locale',
           upload: 'Carica',
-          checksumPlaceholder: 'Checksum SHA-256 (facoltativo)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'Il checksum SHA-256 deve contenere 64 caratteri esadecimali.',
           checksumMismatch:
             'La verifica SHA-256 non è riuscita. Il pacchetto potrebbe essere danneggiato.',

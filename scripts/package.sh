@@ -225,7 +225,13 @@ cat > "$MANIFEST" <<EOF
 }
 EOF
 
+# akkijp fork: the third release asset. scripts/verify-release-assets.sh checks it, and the
+# offline update screen requires this SHA-256.
+CHECKSUM="$OUT/sha256.txt"
+(cd "$OUT" && sha256sum "nanokvm_$VERSION.tar.gz") > "$CHECKSUM"
+
 echo
 echo "[DONE] $TARBALL"
 echo "[DONE] $MANIFEST"
+echo "[DONE] $CHECKSUM"
 cat "$MANIFEST"

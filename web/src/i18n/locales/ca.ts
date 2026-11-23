@@ -688,7 +688,7 @@ const ca = {
           title: 'Actualitzacions fora de línia',
           desc: "Actualització mitjançant el paquet d'instal·lació local",
           upload: 'Puja',
-          checksumPlaceholder: 'Suma de verificació SHA-256 (opcional)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum:
             'La suma de verificació SHA-256 ha de contenir 64 caràcters hexadecimals.',
           checksumMismatch:

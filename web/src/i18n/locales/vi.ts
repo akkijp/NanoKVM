@@ -685,7 +685,7 @@ const vi = {
           title: 'Cập nhật ngoại tuyến',
           desc: 'Cập nhật thông qua gói cài đặt cục bộ',
           upload: 'Tải lên',
-          checksumPlaceholder: 'Tổng kiểm SHA-256 (không bắt buộc)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'Tổng kiểm SHA-256 phải chứa 64 ký tự thập lục phân.',
           checksumMismatch: 'Xác minh SHA-256 không thành công. Gói có thể đã bị hỏng.',
           invalidName:

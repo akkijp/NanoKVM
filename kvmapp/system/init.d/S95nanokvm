@@ -60,12 +60,21 @@ disable_audio_capture() {
     done
 }
 
-# akkijp fork: the AI agent runtime (picoclaw) is disabled. Stop a copy that
-# an earlier build installed and keep it from starting at boot.
+# akkijp fork: the AI agent runtime (picoclaw) is disabled. Stop a gateway an
+# earlier build started (the server may have launched it with the script under
+# /kvmapp, so do not rely on /etc), and keep it from starting at boot.
 disable_picoclaw() {
-    [ -f /etc/init.d/S96picoclaw ] || return 0
-    /etc/init.d/S96picoclaw stop >/dev/null 2>&1 || true
-    mv -f /etc/init.d/S96picoclaw /etc/init.d/disabled-S96picoclaw
+    for script in /etc/init.d/S96picoclaw /kvmapp/system/init.d/S96picoclaw; do
+        [ -x "$script" ] && "$script" stop >/dev/null 2>&1
+    done
+    if pidof picoclaw >/dev/null 2>&1; then
+        killall -TERM picoclaw 2>/dev/null || true
+        wait_for_exit picoclaw 5 || killall -KILL picoclaw 2>/dev/null || true
+        wait_for_exit picoclaw 2 || echo "Failed to stop picoclaw" >&2
+    fi
+    if [ -f /etc/init.d/S96picoclaw ]; then
+        mv -f /etc/init.d/S96picoclaw /etc/init.d/disabled-S96picoclaw
+    fi
 }
 
 stop_services() {
@@ -75,6 +84,10 @@ stop_services() {
 }
 
 start_services() {
+    # Runs on start and restart, so an update takes effect without a reboot.
+    disable_audio_capture
+    disable_picoclaw
+
     if pidof NanoKVM-Server >/dev/null 2>&1 && pidof kvm_system >/dev/null 2>&1; then
         return 0
     fi
@@ -143,9 +156,6 @@ case "$1" in
             mv /kvmapp/server/web/original.ico /kvmapp/server/web/sipeed.ico
         fi
     fi
-
-    disable_audio_capture
-    disable_picoclaw
 
     # Start services
     start_services || exit 1

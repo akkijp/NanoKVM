@@ -96,9 +96,7 @@ func offlineUpdate(c *gin.Context) error {
 		return err
 	}
 
-	archiveName := filepath.Base(target)
-	expectedRoot := strings.TrimSuffix(archiveName, ".tar.gz")
-	expectedVersion := strings.TrimPrefix(expectedRoot, "nanokvm_")
+	expectedRoot, expectedVersion := packageRootAndVersion(filepath.Base(target))
 	info, err := inspectUpdateArchive(target, expectedRoot)
 	if err != nil {
 		return fmt.Errorf("inspect update package: %w", err)
@@ -124,7 +122,9 @@ func offlineUpdate(c *gin.Context) error {
 func parseSHA256Checksum(value string) ([]byte, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil, nil
+		// akkijp fork: an uploaded package is installed only against a digest the user supplies,
+		// e.g. from sha256.txt of the fork's release.
+		return nil, fmt.Errorf("sha256 checksum is required")
 	}
 
 	checksum, err := hex.DecodeString(value)
@@ -136,8 +136,8 @@ func parseSHA256Checksum(value string) ([]byte, error) {
 }
 
 func verifySHA256Checksum(filePath string, expected []byte) error {
-	if len(expected) == 0 {
-		return nil
+	if len(expected) != sha256.Size {
+		return fmt.Errorf("sha256 checksum is required")
 	}
 
 	file, err := os.Open(filePath)
@@ -286,6 +286,13 @@ func validateFilename(filename string) error {
 	}
 
 	return nil
+}
+
+// packageRootAndVersion derives the archive root directory and the version from a validated
+// package name: nanokvm_2.5.4.1.tar.gz -> nanokvm_2.5.4.1, 2.5.4.1.
+func packageRootAndVersion(archiveName string) (string, string) {
+	root := strings.TrimSuffix(archiveName, ".tar.gz")
+	return root, strings.TrimPrefix(root, "nanokvm_")
 }
 
 func removeSentinelFile() {

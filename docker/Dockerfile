@@ -37,12 +37,12 @@ RUN wget -O /tmp/host-tools.tar.gz https://sophon-file.sophon.cn/sophon-prod-s3/
 FROM base_apt AS golang
 
 USER root
-# akkijp fork: verify the Go archive against the checksums published on go.dev.
+# akkijp fork: verify the Go archive against the checksum published on go.dev. The host
+# toolchain above is x86-64 only, so the whole image is built for linux/amd64.
 RUN set -eu; \
     case "$(uname -m)" in \
       x86_64) arch=amd64; sum=2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613 ;; \
-      aarch64) arch=arm64; sum=05de75d6994a2783699815ee553bd5a9327d8b79991de36e38b66862782f54ae ;; \
-      *) echo "unsupported build host $(uname -m)"; exit 1 ;; \
+      *) echo "unsupported build host $(uname -m): the builder needs linux/amd64"; exit 1 ;; \
     esac; \
     wget -O /tmp/go.tar.gz "https://go.dev/dl/go1.25.0.linux-${arch}.tar.gz"; \
     echo "${sum}  /tmp/go.tar.gz" | sha256sum -c - \

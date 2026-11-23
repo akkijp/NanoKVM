@@ -694,7 +694,7 @@ const hu = {
           title: 'Offline frissítések',
           desc: 'Frissítés helyi telepítőcsomaggal',
           upload: 'Feltöltés',
-          checksumPlaceholder: 'SHA-256 ellenőrzőösszeg (opcionális)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'A SHA-256 ellenőrzőösszegnek 64 hexadecimális karakterből kell állnia.',
           checksumMismatch: 'Az SHA-256 ellenőrzése sikertelen. Lehet, hogy a csomag sérült.',
           invalidName: 'Érvénytelen fájlnévformátum. Kérjük, töltse le a GitHub kiadásaiból.',

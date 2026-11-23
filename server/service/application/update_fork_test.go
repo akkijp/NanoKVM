@@ -1,6 +1,7 @@
 package application
 
 import (
+	"archive/tar"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
@@ -8,13 +9,78 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// fourPartArchive writes a minimal package nanokvm_<name>.tar.gz whose version file says inner.
+func fourPartArchive(t *testing.T, name, inner string) string {
+	t.Helper()
+	root := "nanokvm_" + name
+	return writeTestArchive(t, []archiveEntry{
+		{name: root, typeFlag: tar.TypeDir},
+		{name: root + "/version", typeFlag: tar.TypeReg, data: inner + "\n"},
+		{name: root + "/server/NanoKVM-Server", typeFlag: tar.TypeReg, data: "server"},
+		{name: root + "/kvm_system/kvm_system", typeFlag: tar.TypeReg, data: "system"},
+		{name: root + "/system/init.d/S95nanokvm", typeFlag: tar.TypeReg, data: "init"},
+		{name: root + "/system/update-nanokvm.py", typeFlag: tar.TypeReg, data: "py"},
+		{name: root + "/kvm_new_app", typeFlag: tar.TypeReg},
+	})
+}
+
+// The offline path derives root and version from the uploaded file name.
+func TestOfflinePackageKeepsFourPartVersion(t *testing.T) {
+	name := "nanokvm_2.5.4.1.tar.gz"
+	if err := validateFilename(name); err != nil {
+		t.Fatalf("validateFilename: %v", err)
+	}
+	root, version := packageRootAndVersion(name)
+	if root != "nanokvm_2.5.4.1" || version != "2.5.4.1" {
+		t.Fatalf("packageRootAndVersion = %q, %q", root, version)
+	}
+	extracted, err := extractUpdateArchive(fourPartArchive(t, "2.5.4.1", "2.5.4.1"), t.TempDir(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExtractedPackage(extracted, version); err != nil {
+		t.Fatalf("four-part package rejected: %v", err)
+	}
+
+	mismatched, err := extractUpdateArchive(fourPartArchive(t, "2.5.4.1", "2.5.4"), t.TempDir(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExtractedPackage(mismatched, version); err == nil {
+		t.Fatal("a package whose version file says 2.5.4 must be rejected as 2.5.4.1")
+	}
+}
+
+func TestExtractedPackageNeedsMigrationMarker(t *testing.T) {
+	root := "nanokvm_2.5.4.1"
+	archive := writeTestArchive(t, []archiveEntry{
+		{name: root, typeFlag: tar.TypeDir},
+		{name: root + "/version", typeFlag: tar.TypeReg, data: "2.5.4.1\n"},
+		{name: root + "/server/NanoKVM-Server", typeFlag: tar.TypeReg, data: "server"},
+		{name: root + "/kvm_system/kvm_system", typeFlag: tar.TypeReg, data: "system"},
+		{name: root + "/system/init.d/S95nanokvm", typeFlag: tar.TypeReg, data: "init"},
+		{name: root + "/system/update-nanokvm.py", typeFlag: tar.TypeReg, data: "py"},
+	})
+	extracted, err := extractUpdateArchive(archive, t.TempDir(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExtractedPackage(extracted, "2.5.4.1"); err == nil {
+		t.Fatal("a package without kvm_new_app must be rejected")
+	}
+}
 
 // akkijp fork: walk the online update path the way GitHub serves it. latest.json comes from the
 // "latest" alias, the package from the versioned tag, and both redirect to another host.
 func TestOnlineUpdateFollowsReleaseRedirects(t *testing.T) {
-	pkg := []byte("fake package bytes")
+	pkg, err := os.ReadFile(fourPartArchive(t, "2.5.4.1", "2.5.4.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	sum := sha512.Sum512(pkg)
 	manifest, _ := json.Marshal(Latest{
 		ManifestVersion: 2, Version: "2.5.4.1", Name: "nanokvm_2.5.4.1.tar.gz",
@@ -70,9 +136,16 @@ func TestOnlineUpdateFollowsReleaseRedirects(t *testing.T) {
 	if err := checksum(target, latest.Sha512); err != nil {
 		t.Fatalf("checksum: %v", err)
 	}
-	got, _ := os.ReadFile(target)
-	if string(got) != string(pkg) {
-		t.Fatal("downloaded package differs")
+	root := strings.TrimSuffix(latest.Name, ".tar.gz")
+	if _, err := inspectUpdateArchive(target, root); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	extracted, err := extractUpdateArchive(target, t.TempDir(), root)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if err := validateExtractedPackage(extracted, latest.Version); err != nil {
+		t.Fatalf("validate: %v", err)
 	}
 	if len(requested) != 2 || requested[1] != "/releases/download/2.5.4.1/nanokvm_2.5.4.1.tar.gz" {
 		t.Fatalf("unexpected release requests: %v", requested)

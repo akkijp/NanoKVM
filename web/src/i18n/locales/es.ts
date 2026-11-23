@@ -695,7 +695,7 @@ const es = {
           title: 'Actualizaciones sin conexión',
           desc: 'Actualización a través del paquete de instalación local',
           upload: 'Subir',
-          checksumPlaceholder: 'Suma de comprobación SHA-256 (opcional)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum:
             'La suma de comprobación SHA-256 debe contener 64 caracteres hexadecimales.',
           checksumMismatch:

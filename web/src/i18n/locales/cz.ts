@@ -689,7 +689,7 @@ const cz = {
           title: 'Offline aktualizace',
           desc: 'Aktualizace prostřednictvím místního instalačního balíčku',
           upload: 'Nahrát',
-          checksumPlaceholder: 'Kontrolní součet SHA-256 (volitelný)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'Kontrolní součet SHA-256 musí obsahovat 64 hexadecimálních znaků.',
           checksumMismatch: 'Ověření SHA-256 se nezdařilo. Balíček může být poškozený.',
           invalidName: 'Neplatný formát souboru. Stáhněte si prosím z vydání GitHubu.',

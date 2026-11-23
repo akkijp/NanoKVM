@@ -684,7 +684,7 @@ const en = {
           title: 'Offline Updates',
           desc: 'Update through local installation package',
           upload: 'Upload',
-          checksumPlaceholder: 'SHA-256 checksum (optional)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'The SHA-256 checksum must contain 64 hexadecimal characters.',
           checksumMismatch: 'SHA-256 verification failed. The package may be corrupted.',
           invalidName: 'Invalid filename format. Please download from GitHub releases.',

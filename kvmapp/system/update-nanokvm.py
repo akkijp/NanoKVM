@@ -20,21 +20,28 @@ Usage:
 import argparse
 import base64
 import binascii
+import fcntl
 import hashlib
 import json
 import os
 import posixpath
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 
 RELEASES = "https://github.com/akkijp/NanoKVM/releases"
 APP_DIR = "/kvmapp"
 BACKUP_DIR = "/root/old"
-CACHE_DIR = "/root/.kvm-cache"
-SERVICE = "/etc/init.d/S95nanokvm"
+WORK_PARENT = "/root"
+LOCK_FILE = "/run/nanokvm-update.lock"
+# The installed init script stops the running app. The new app is started with
+# its own script, so its first start already runs the fork's boot steps.
+STOP_SCRIPT = "/etc/init.d/S95nanokvm"
+APP_INIT_SCRIPT = "system/init.d/S95nanokvm"
 
 MAX_PACKAGE_SIZE = 1 << 30
 MAX_EXPANDED_SIZE = 2 << 30
@@ -47,6 +54,10 @@ REQUIRED_FILES = (
     "server/NanoKVM-Server",
     "kvm_system/kvm_system",
     "system/init.d/S95nanokvm",
+    "system/update-nanokvm.py",
+    # Tells kvm_system to run its migration, which installs the new init
+    # scripts and this updater into /etc.
+    "kvm_new_app",
 )
 
 
@@ -85,12 +96,12 @@ def fetch(url: str, dest, limit: int) -> None:
             dest.write(chunk)
 
 
-def fetch_manifest(version: str) -> dict:
+def fetch_manifest(version: str, work: str) -> dict:
     if version:
         url = f"{RELEASES}/download/{version}/latest.json"
     else:
         url = f"{RELEASES}/latest/download/latest.json"
-    path = os.path.join(CACHE_DIR, "latest.json")
+    path = os.path.join(work, "latest.json")
     with open(path, "wb") as f:
         fetch(url, f, MAX_MANIFEST_SIZE)
     with open(path, "rb") as f:
@@ -118,6 +129,17 @@ def sha512_of(path: str) -> bytes:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             h.update(chunk)
     return h.digest()
+
+
+def copy_limited(source: str, dest: str, limit: int) -> None:
+    """Copy source to dest so the bytes we verify are the bytes we unpack."""
+    written = 0
+    with open(source, "rb") as src, open(dest, "xb") as out:
+        for chunk in iter(lambda: src.read(1 << 16), b""):
+            written += len(chunk)
+            if written > limit:
+                raise UpdateError("package is larger than the limit")
+            out.write(chunk)
 
 
 def version_from_name(path: str) -> str:
@@ -158,9 +180,9 @@ def check_members(archive: tarfile.TarFile, root: str) -> list:
     return members
 
 
-def extract(package: str, version: str) -> str:
+def extract(package: str, version: str, work: str) -> str:
     root = f"nanokvm_{version}"
-    dest = os.path.join(CACHE_DIR, "extract")
+    dest = os.path.join(work, "extract")
     os.mkdir(dest)
     with tarfile.open(package, "r:gz") as archive:
         members = check_members(archive, root)
@@ -183,14 +205,20 @@ def extract(package: str, version: str) -> str:
     return source_dir
 
 
-service_stopped = False
+def service(script: str, action: str) -> int:
+    print(f"{script} {action}")
+    try:
+        return subprocess.run([script, action]).returncode
+    except OSError as e:
+        print(f"cannot run {script}: {e}", file=sys.stderr)
+        return 127
 
 
-def install(source_dir: str) -> None:
-    global service_stopped
-    print("Stopping nanokvm service...")
-    os.system(f"{SERVICE} stop")
-    service_stopped = True
+def app_script() -> str:
+    return os.path.join(APP_DIR, APP_INIT_SCRIPT)
+
+
+def swap_in(source_dir: str) -> None:
     if os.path.exists(BACKUP_DIR):
         shutil.rmtree(BACKUP_DIR)
     os.rename(APP_DIR, BACKUP_DIR)
@@ -205,43 +233,74 @@ def install(source_dir: str) -> None:
         os.chmod(root, 0o755)
         for name in files:
             os.chmod(os.path.join(root, name), 0o755)
-    print(f"Previous version kept in {BACKUP_DIR}")
+
+
+def install(source_dir: str, work: str) -> None:
+    if service(STOP_SCRIPT, "stop") != 0:
+        raise UpdateError("could not stop the nanokvm service; nothing was changed")
+    try:
+        swap_in(source_dir)
+    except Exception as e:
+        service(app_script(), "restart")
+        raise UpdateError(f"could not put the new version in place; previous version kept: {e}")
+
+    if service(app_script(), "restart") == 0:
+        print(f"Previous version kept in {BACKUP_DIR}")
+        return
+
+    # The new version did not start. Put the previous one back so the KVM stays reachable.
+    service(app_script(), "stop")
+    os.rename(APP_DIR, os.path.join(work, "failed"))
+    os.rename(BACKUP_DIR, APP_DIR)
+    if service(app_script(), "restart") != 0:
+        raise UpdateError("the new version did not start, and the previous version did not start either")
+    raise UpdateError("the new version did not start; rolled back to the previous version")
 
 
 def run(args) -> str:
-    if os.path.exists(CACHE_DIR):
-        shutil.rmtree(CACHE_DIR)
-    os.mkdir(CACHE_DIR, 0o700)
+    lock = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        raise UpdateError("another update is already running")
+    work = tempfile.mkdtemp(prefix=".kvm-update-", dir=WORK_PARENT)
+    try:
+        return run_locked(args, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        lock.close()
 
+
+def run_locked(args, work: str) -> str:
     if args.file:
         if not args.sha512:
             raise UpdateError("--file requires --sha512")
         version = version_from_name(args.file)
         if args.version and args.version != version:
             raise UpdateError("--version does not match the file name")
-        if os.path.getsize(args.file) > MAX_PACKAGE_SIZE:
-            raise UpdateError("package is larger than the limit")
-        package = args.file
         expected = parse_digest(args.sha512)
+        package = os.path.join(work, os.path.basename(args.file))
+        copy_limited(args.file, package, MAX_PACKAGE_SIZE)
     else:
         if args.version and not VERSION_RE.match(args.version):
             raise UpdateError("invalid --version")
-        manifest = fetch_manifest(args.version)
+        manifest = fetch_manifest(args.version, work)
         version = manifest["version"]
         expected = parse_digest(args.sha512 or manifest["sha512"])
-        package = os.path.join(CACHE_DIR, manifest["name"])
-        with open(package, "wb") as f:
+        package = os.path.join(work, manifest["name"])
+        with open(package, "xb") as f:
             fetch(f"{RELEASES}/download/{version}/{manifest['name']}", f, MAX_PACKAGE_SIZE)
 
     if sha512_of(package) != expected:
         raise UpdateError("sha512 does not match; package not installed")
     print(f"sha512 verified for {version}")
 
-    source_dir = extract(package, version)
+    source_dir = extract(package, version, work)
     if args.dry_run:
         print("Dry run: package is valid, nothing installed")
         return version
-    install(source_dir)
+    install(source_dir, work)
     return version
 
 
@@ -255,16 +314,12 @@ def main() -> int:
 
     try:
         version = run(args)
-        if not args.dry_run:
-            print(f"Successfully updated to version: {version}")
-        return 0
     except Exception as e:
         print(f"update failed\n{e}", file=sys.stderr)
         return 1
-    finally:
-        shutil.rmtree(CACHE_DIR, ignore_errors=True)
-        if service_stopped:
-            os.system(f"{SERVICE} restart")
+    if not args.dry_run:
+        print(f"Successfully updated to version: {version}")
+    return 0
 
 
 if __name__ == "__main__":

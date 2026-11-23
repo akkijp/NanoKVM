@@ -193,6 +193,9 @@ func validateExtractedPackage(rootDir, expectedVersion string) error {
 		"server/NanoKVM-Server",
 		"kvm_system/kvm_system",
 		"system/init.d/S95nanokvm",
+		// akkijp fork: the migration marker and the updater it installs into /etc.
+		"system/update-nanokvm.py",
+		"kvm_new_app",
 	} {
 		info, err := os.Stat(filepath.Join(rootDir, filepath.FromSlash(required)))
 		if err != nil || !info.Mode().IsRegular() {

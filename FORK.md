@@ -19,6 +19,7 @@
 | 更新の取得先を cdn.sipeed.com からこのフォークの GitHub Releases に替える | 中国の CDN に問い合わせない。更新は自分でビルドしたものだけにする | `server/service/application/service.go` |
 | ログイン失敗のロックを常に有効にする（既定 900 秒・5 回） | 上流の既定は 0（無効）で、総当たりを止めない | `server/config/default.go` |
 | パッケージは版ごとのタグの URL から取り、名前と版の一致を確かめる | 動く「latest」から取ると、確かめた版と違う物が来うる | `server/service/application/version.go` |
+| オフライン更新（ファイルを上げる更新）では SHA-256 を必須にし、取得先のリンクをこのフォークにする | 上流の配布物を画面から上げても、確かめずに入ってしまう | `server/service/application/update_offline.go`、`update/offline.tsx` |
 | カスタム更新サーバーとプレビューの経路をふさぐ | 古い設定ファイル（`/etc/kvm/application-update.json`）が残っていても、上流や他所から取らない | `server/service/application/update_server.go`、画面の更新設定 |
 | 画面の版の比較を作り直す（4 つの数字・rc 版の順・大きな数字・読めない版を「最新」と出さない） | semver の比較では 4 つの数字の版を扱えない | `web/src/lib/version.ts` |
 | 保守用の `update-nanokvm.py` を、SHA-512 を確かめて入れる形に書き直す | 上流のものは cdn.sipeed.com の `latest.zip` を確かめずに入れていた。最初の 2.5.4.1 を入れる入口にもなる | `kvmapp/system/update-nanokvm.py` |
@@ -37,14 +38,15 @@
 make release VERSION=2.5.4.1
 ```
 
-成果物は `build/release/nanokvm_2.5.4.1.tar.gz` と `latest.json`。
+成果物は `build/release/` の `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` の 3 つ。`scripts/verify-release-assets.sh build/release 2.5.4.1` で確かめる。
+ビルド環境は linux/amd64 だけ（ツールチェーンが x86-64 用のため）。
 
 テストは `scripts/fork-test.sh`（docker が要る。nkbuild で回す）。
 
 ## リリース
 
 1. `akki/2.5.4` に注釈付きタグ `2.5.4.1` を付けて push する。`scripts/verify-release-tag.sh 2.5.4.1` でタグが `akki/2.5.4` の上にあることを確かめる
-2. GitHub Releases の `2.5.4.1` に `nanokvm_2.5.4.1.tar.gz` と `latest.json` を上げる。機器は `releases/latest/download/latest.json` を読み、`releases/download/<版>/<名前>` から取る
+2. GitHub Releases の `2.5.4.1` に `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` を上げる。機器は `releases/latest/download/latest.json` を読み、`releases/download/<版>/<名前>` から取る
 
 ## 機器へ最初に入れる（上流の版から）
 
@@ -58,5 +60,6 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512>
 ```
 
+サービスを止められなければ何も変えずに終わる。新しい版が起動しなければ、前の版に戻して起動し直し、失敗として終わる。
 前の版は `/root/old` に残る。戻すときは `/etc/init.d/S95nanokvm stop` のあと `/kvmapp` と `/root/old` を入れ替えて `reboot`。
 2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`（フォークの Releases から取る）で入る。

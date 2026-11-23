@@ -676,7 +676,7 @@ const th = {
           title: 'อัปเดตออฟไลน์',
           desc: 'อัปเดตผ่านแพ็คเกจการติดตั้งในเครื่อง',
           upload: 'อัปโหลด',
-          checksumPlaceholder: 'ผลรวมตรวจสอบ SHA-256 (ไม่บังคับ)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'ผลรวมตรวจสอบ SHA-256 ต้องมีอักขระเลขฐานสิบหก 64 ตัว',
           checksumMismatch: 'การตรวจสอบ SHA-256 ล้มเหลว แพ็กเกจอาจเสียหาย',
           invalidName: 'รูปแบบชื่อไฟล์ไม่ถูกต้อง กรุณาดาวน์โหลดจากรุ่น GitHub',

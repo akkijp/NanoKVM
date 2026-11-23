@@ -71,12 +71,14 @@ func TestInspectAndExtractArchive(t *testing.T) {
 		{name: root + "/server/NanoKVM-Server", typeFlag: tar.TypeReg, data: "server"},
 		{name: root + "/kvm_system/kvm_system", typeFlag: tar.TypeReg, data: "system"},
 		{name: root + "/system/init.d/S95nanokvm", typeFlag: tar.TypeReg, data: "init"},
+		{name: root + "/system/update-nanokvm.py", typeFlag: tar.TypeReg, data: "py"},
+		{name: root + "/kvm_new_app", typeFlag: tar.TypeReg},
 	})
 	info, err := inspectUpdateArchive(archive, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.expandedBytes != 22 { // data totals: 6 + 6 + 6 + 4
+	if info.expandedBytes != 24 { // data totals: 6 + 6 + 6 + 4 + 2 + 0
 		t.Fatalf("unexpected expanded size %d", info.expandedBytes)
 	}
 	destination := t.TempDir()

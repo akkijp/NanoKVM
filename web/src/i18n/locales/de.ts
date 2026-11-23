@@ -700,7 +700,7 @@ const de = {
           title: 'Offline Aktualisierung',
           desc: 'Über lokales Installationspaket aktualisieren',
           upload: 'Hochladen',
-          checksumPlaceholder: 'SHA-256-Prüfsumme (optional)',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'Die SHA-256-Prüfsumme muss 64 hexadezimale Zeichen enthalten.',
           checksumMismatch:
             'Die SHA-256-Überprüfung ist fehlgeschlagen. Das Paket ist möglicherweise beschädigt.',

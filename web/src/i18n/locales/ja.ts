@@ -693,7 +693,7 @@ const ja = {
           title: 'オフラインアップデート',
           desc: 'ローカルインストールパッケージでアップデートする',
           upload: 'アップロード',
-          checksumPlaceholder: 'SHA-256チェックサム（任意）',
+          checksumPlaceholder: 'SHA-256 (sha256.txt)',
           invalidChecksum: 'SHA-256チェックサムは64文字の16進数である必要があります。',
           checksumMismatch:
             'SHA-256の検証に失敗しました。パッケージが破損している可能性があります。',

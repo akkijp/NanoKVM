@@ -58,3 +58,12 @@ func TestUpdateURLsAreExact(t *testing.T) {
 		t.Error("update sources must default to the fork's releases")
 	}
 }
+
+func TestOfflineUpdateRequiresSHA256(t *testing.T) {
+	if _, err := parseSHA256Checksum(""); err == nil {
+		t.Fatal("an empty SHA-256 must be rejected")
+	}
+	if err := verifySHA256Checksum("unused", nil); err == nil {
+		t.Fatal("verification without a digest must fail")
+	}
+}
