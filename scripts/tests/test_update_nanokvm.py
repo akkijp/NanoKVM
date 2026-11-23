@@ -49,7 +49,6 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
         write_script(pathlib.Path(self.u.STOP_SCRIPT), b"#!/bin/sh\nexit 0\n")
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
-        self.u.STAGE_MARK = str(self.base / "root/kvmapp.new.update-nanokvm")
         self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
@@ -251,12 +250,22 @@ class UpdateScriptTest(unittest.TestCase):
         stage = pathlib.Path(self.u.STAGE_DIR)
         stage.mkdir()
         (stage / "leftover").write_text("x")
-        pathlib.Path(self.u.STAGE_MARK).write_text("")
+        (stage / self.u.STAGE_MARK_NAME).write_text("")
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
         self.assertEqual(self.installed_version(), "2.5.4.1")
         self.assertFalse(stage.exists())
-        self.assertFalse(os.path.exists(self.u.STAGE_MARK))
+        self.assertFalse((pathlib.Path(self.u.APP_DIR) / self.u.STAGE_MARK_NAME).exists())
+
+    def test_mark_left_in_kvmapp_does_not_vouch_for_a_new_stage(self):
+        # Power was lost after the switch, before the mark was tidied up; then an admin made /kvmapp.new.
+        (pathlib.Path(self.u.APP_DIR) / self.u.STAGE_MARK_NAME).write_text("")
+        stage = pathlib.Path(self.u.STAGE_DIR)
+        stage.mkdir()
+        (stage / "admin-file").write_text("x")
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("not left by this updater", file=path, sha512=digest)
+        self.assertTrue((stage / "admin-file").exists())
 
     def test_foreign_stage_is_not_removed(self):
         stage = pathlib.Path(self.u.STAGE_DIR)
@@ -269,10 +278,18 @@ class UpdateScriptTest(unittest.TestCase):
     def test_input_inside_stage_is_not_removed(self):
         stage = pathlib.Path(self.u.STAGE_DIR)
         stage.mkdir()
-        pathlib.Path(self.u.STAGE_MARK).write_text("")
+        (stage / self.u.STAGE_MARK_NAME).write_text("")
         path, digest = self.package("2.5.4.1", name="root/kvmapp.new/nanokvm_2.5.4.1.tar.gz")
         self.assert_rejected("not left by this updater", file=path, sha512=digest)
         self.assertTrue(pathlib.Path(path).exists())
+
+    def test_daemons_do_not_inherit_the_log(self):
+        # The new version's restart starts the daemons; whatever they print must not land in the log.
+        path, digest = self.package("2.5.4.1", self.entries(
+            "2.5.4.1", init=b"#!/bin/sh\necho daemon-output\nexit 0\n"))
+        self.run_update(file=path, sha512=digest)
+        log = pathlib.Path(self.u.SERVICE_LOG)
+        self.assertNotIn("daemon-output", log.read_text() if log.exists() else "")
 
     def test_init_script_output_goes_to_the_log_not_the_terminal(self):
         write_script(pathlib.Path(self.u.STOP_SCRIPT), b"#!/bin/sh\necho stopping-OK\n")
@@ -689,6 +706,12 @@ class MicrophoneTest(unittest.TestCase):
         text = text.replace("flock -n 9 ||", "true ||")
         text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", "record daemon-kvm_system")
         text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", "record daemon-NanoKVM-Server")
+        # Every write the script makes goes under the temp dir, never to the host.
+        fake = self.base / "fs"
+        for prefix in ("/boot/", "/root/", "/device_key", "/mnt/", "/kvmapp", "/sys/", "/etc/", "/run/"):
+            text = text.replace(prefix, f"{fake}{prefix}")
+        for d in ("boot", "root", "mnt/data", "kvmapp/server/web", "sys", "etc/init.d", "run"):
+            (fake / d).mkdir(parents=True, exist_ok=True)
         stubs = f"""
 record() {{ echo "$1" >> {log}; }}
 disable_audio_capture() {{ record mic; }}
@@ -705,8 +728,10 @@ reboot() {{ record reboot; }}
 """
         head, case = text.split('case "$1" in', 1)
         script = head + stubs + 'case "$1" in' + case
-        # Redirections to device paths fail harmlessly off the device; silence them.
-        subprocess.run(["sh", "-c", script, "S95nanokvm", action], capture_output=True, text=True)
+        result = subprocess.run(["sh", "-c", script, "S95nanokvm", action], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        if action == "start":  # written into the fake /boot, not the host's (macOS sh prints "-n" literally)
+            self.assertTrue((fake / "boot/hostname.prefix").read_text().strip().endswith("kvm"))
         return log.read_text().split() if log.exists() else []
 
     def test_start_and_restart_both_run_the_boot_steps_before_the_daemons(self):
