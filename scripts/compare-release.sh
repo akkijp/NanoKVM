@@ -7,12 +7,15 @@
 # every device pulls over OTA. Unexpected entries here (a library that vanished,
 # an init script that changed without a matching commit) are worth a look.
 #
-# Usage: scripts/compare-release.sh <new-tarball> [base-url]
+# Usage: scripts/compare-release.sh <new-tarball> [releases-url]
+#   releases-url defaults to the fork's https://github.com/akkijp/NanoKVM/releases.
+#   The manifest comes from <releases-url>/latest/download/latest.json and the
+#   package from <releases-url>/download/<version>/<name>, as on the device.
 
 set -uo pipefail
 
 NEW_TARBALL="${1:-}"
-BASE_URL="${2:-https://github.com/akkijp/NanoKVM/releases/latest/download}"
+RELEASES_URL="${2:-https://github.com/akkijp/NanoKVM/releases}"
 
 if [ -z "$NEW_TARBALL" ] || [ ! -f "$NEW_TARBALL" ]; then
     echo "Usage: $0 <new-tarball> [base-url]" >&2
@@ -22,8 +25,8 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "[INFO] fetching published manifest from $BASE_URL/latest.json"
-if ! curl -fsSL "$BASE_URL/latest.json" -o "$WORK/latest.json"; then
+echo "[INFO] fetching published manifest from $RELEASES_URL/latest/download/latest.json"
+if ! curl -fsSL "$RELEASES_URL/latest/download/latest.json" -o "$WORK/latest.json"; then
     echo "[WARN] could not fetch latest.json - skipping comparison"
     exit 0
 fi
@@ -31,13 +34,14 @@ fi
 cat "$WORK/latest.json"
 
 OLD_NAME="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$WORK/latest.json")"
-if [ -z "$OLD_NAME" ]; then
-    echo "[WARN] no \"name\" in latest.json - skipping comparison"
+OLD_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$WORK/latest.json")"
+if [ -z "$OLD_NAME" ] || [ "$OLD_NAME" != "nanokvm_${OLD_VERSION}.tar.gz" ]; then
+    echo "[WARN] latest.json has no matching \"version\" and \"name\" - skipping comparison"
     exit 0
 fi
 
 echo "[INFO] downloading published package $OLD_NAME"
-if ! curl -fsSL "$BASE_URL/$OLD_NAME" -o "$WORK/$OLD_NAME"; then
+if ! curl -fsSL "$RELEASES_URL/download/$OLD_VERSION/$OLD_NAME" -o "$WORK/$OLD_NAME"; then
     echo "[WARN] could not download $OLD_NAME - skipping comparison"
     exit 0
 fi

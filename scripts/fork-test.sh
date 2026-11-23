@@ -15,7 +15,7 @@ RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Go"
 "${RUN[@]}" -e GOFLAGS=-mod=mod -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath "$GO_IMAGE" sh -euc '
-  cp -r /src/server /tmp/server && cd /tmp/server
+  cp -r /src/server /tmp/server && cp -r /src/kvmapp /tmp/kvmapp && cd /tmp/server
   mkdir -p /tmp/stub
   nm -D --defined-only dl_lib/libkvm.so | awk "\$2==\"T\" { print \"long \" \$3 \"(void) { return 0; }\" }" > /tmp/stub/stub.c
   gcc -shared -fPIC -o /tmp/stub/libkvm.so /tmp/stub/stub.c

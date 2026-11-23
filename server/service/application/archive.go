@@ -188,19 +188,33 @@ func validateExtractedPackage(rootDir, expectedVersion string) error {
 	if strings.TrimSpace(string(version)) != expectedVersion {
 		return fmt.Errorf("invalid update package layout: version mismatch")
 	}
-	for _, required := range []string{
-		"version",
-		"server/NanoKVM-Server",
-		"kvm_system/kvm_system",
-		"system/init.d/S95nanokvm",
-		// akkijp fork: the migration marker and the updater it installs into /etc.
-		"system/update-nanokvm.py",
-		"kvm_new_app",
-	} {
+	for _, required := range requiredPackageFiles {
 		info, err := os.Stat(filepath.Join(rootDir, filepath.FromSlash(required)))
 		if err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("invalid update package layout: missing required file %s", required)
 		}
 	}
 	return nil
+}
+
+// requiredPackageFiles must all be in an update package. akkijp fork: besides the upstream
+// four, the migration marker and every file the migration copies unconditionally
+// (support/sg2002/kvm_system/main/lib/system_init/system_init.cpp new_app_init), so a package
+// that would fail its first start is refused before the running version is stopped.
+var requiredPackageFiles = []string{
+	"version",
+	"server/NanoKVM-Server",
+	"kvm_system/kvm_system",
+	"system/init.d/S95nanokvm",
+	"system/update-nanokvm.py",
+	"kvm_new_app",
+	"system/init.d/S00kmod",
+	"system/init.d/S01fs",
+	"system/init.d/S03usbdev",
+	"system/init.d/S15kvmhwd",
+	"system/init.d/S30eth",
+	"system/init.d/S30wifi",
+	"system/init.d/S50sshd",
+	"system/init.d/S98tailscaled",
+	"system/ko/soph_mipi_rx.ko",
 }

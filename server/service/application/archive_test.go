@@ -65,21 +65,18 @@ func TestInspectArchiveRejectsUnsafeEntries(t *testing.T) {
 
 func TestInspectAndExtractArchive(t *testing.T) {
 	root := "nanokvm_1.2.3"
-	archive := writeTestArchive(t, []archiveEntry{
-		{name: root, typeFlag: tar.TypeDir},
-		{name: root + "/version", typeFlag: tar.TypeReg, data: "1.2.3\n"},
-		{name: root + "/server/NanoKVM-Server", typeFlag: tar.TypeReg, data: "server"},
-		{name: root + "/kvm_system/kvm_system", typeFlag: tar.TypeReg, data: "system"},
-		{name: root + "/system/init.d/S95nanokvm", typeFlag: tar.TypeReg, data: "init"},
-		{name: root + "/system/update-nanokvm.py", typeFlag: tar.TypeReg, data: "py"},
-		{name: root + "/kvm_new_app", typeFlag: tar.TypeReg},
-	})
+	entries := packageEntries(root, "1.2.3", "")
+	archive := writeTestArchive(t, entries)
 	info, err := inspectUpdateArchive(archive, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.expandedBytes != 24 { // data totals: 6 + 6 + 6 + 4 + 2 + 0
-		t.Fatalf("unexpected expanded size %d", info.expandedBytes)
+	var want uint64
+	for _, entry := range entries {
+		want += uint64(len(entry.data))
+	}
+	if info.expandedBytes != want {
+		t.Fatalf("unexpected expanded size %d, want %d", info.expandedBytes, want)
 	}
 	destination := t.TempDir()
 	extracted, err := extractUpdateArchive(archive, destination, root)
@@ -89,4 +86,21 @@ func TestInspectAndExtractArchive(t *testing.T) {
 	if err := validateExtractedPackage(extracted, "1.2.3"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// packageEntries is a minimal valid package: every required file, version saying inner
+// (or version itself), and none of the files listed in skip.
+func packageEntries(root, version, skip string) []archiveEntry {
+	entries := []archiveEntry{{name: root, typeFlag: tar.TypeDir}}
+	for _, file := range requiredPackageFiles {
+		if file == skip {
+			continue
+		}
+		data := "x"
+		if file == "version" {
+			data = version + "\n"
+		}
+		entries = append(entries, archiveEntry{name: root + "/" + file, typeFlag: tar.TypeReg, data: data})
+	}
+	return entries
 }

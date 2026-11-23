@@ -1,9 +1,18 @@
-FROM ubuntu:24.04 AS base_apt
+# akkijp fork: the base image is pinned by digest and packages come from a dated Ubuntu
+# snapshot, so a fresh VM and one with cached layers install the same versions.
+FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289 AS base_apt
+ARG UBUNTU_SNAPSHOT=20261120T000000Z
 
 # RUN echo 'Acquire::http::Proxy "http://cache.lan:3142";' > /etc/apt/apt.conf.d/00cacher
 RUN userdel -r ubuntu
-RUN apt update \
-    && apt install wget git cmake build-essential python3 python3-venv python3-pip autoconf automake libtool gosu patchelf -y
+# snapshot.ubuntu.com is HTTPS-only, so ca-certificates comes from the regular archive first
+# (signed by Ubuntu like every package; only its version is not pinned).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && sed -i -E "s#^URIs: http://(archive|security).ubuntu.com/ubuntu/#URIs: https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/#" \
+        /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update \
+    && apt-get install -y wget git cmake build-essential python3 python3-venv python3-pip autoconf automake libtool gosu patchelf
 
 ARG DOCKER_USER=build
 ARG DOCKER_UID=1000

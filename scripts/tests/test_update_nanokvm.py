@@ -48,6 +48,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
+        self.u.migration_reboots = lambda: False
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
         app = pathlib.Path(self.u.APP_DIR)
         app.mkdir(parents=True)
@@ -67,6 +68,8 @@ class UpdateScriptTest(unittest.TestCase):
             "system/update-nanokvm.py": b"x",
             "kvm_new_app": b"",
         }
+        for required in self.u.REQUIRED_FILES:
+            files.setdefault(required, b"x")
         return [(root, None)] + [(f"{root}/{k}", v) for k, v in files.items() if k not in skip]
 
     def package(self, version, entries=None, name=None):
@@ -200,6 +203,13 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_rejected("nothing was changed", file=path, sha512=digest)
         self.assertFalse(os.path.exists(self.u.STAGE_DIR))
 
+    def test_stop_must_succeed_even_if_daemons_are_gone(self):
+        # e.g. another service operation holds the lock and is about to start the app again.
+        write_script(pathlib.Path(self.u.STOP_SCRIPT), FAIL_SCRIPT)
+        self.u.running = lambda name: True
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("nothing was changed", file=path, sha512=digest)
+
     def test_stop_that_returns_early_is_waited_for(self):
         # Older init scripts return 0 before the daemons have exited.
         self.u.running = lambda name: True
@@ -257,6 +267,56 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_rejected("previous version was started again", file=path, sha512=digest)
         self.assertIn("restart", self.calls())
 
+    def test_failed_move_and_failed_restart_is_reported(self):
+        real_rename = os.rename
+
+        def rename(src, dst):
+            if src == self.u.STAGE_DIR:
+                raise OSError("no space left")
+            real_rename(src, dst)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.rename = rename
+        self.u.os.path = os.path
+        self.u.started = lambda: False
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("did not start again either", file=path, sha512=digest)
+
+    def test_interrupted_earlier_switch_is_refused(self):
+        app, old = pathlib.Path(self.u.APP_DIR), pathlib.Path(self.u.BACKUP_DIR)
+        os.rename(app, old)  # power lost between the two renames of an earlier run
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "interrupted"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual((old / "version").read_text().strip(), "2.4.3")
+        self.assertEqual(self.calls(), "")
+
+    def test_driver_reboot_is_not_reported_as_failure(self):
+        self.u.migration_reboots = lambda: True
+        self.u.started = lambda: False  # the daemons never come up in this boot
+        path, digest = self.package("2.5.4.1")
+        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
+        self.assertIn("restart", self.calls())
+
+    def test_migration_reboot_detection_matches_kvm_system(self):
+        import hashlib
+        source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()
+        self.assertIn(self.u.CURRENT_DRIVER_MD5, source)
+        self.assertIn(self.u.LEGACY_DRIVER_MD5, source)
+        u = load()
+        driver, hdmi = self.base / "driver.ko", self.base / "hdmi_version"
+        u.DRIVER, u.HDMI_VERSION = str(driver), str(hdmi)
+        driver.write_bytes(b"driver")
+        digest = hashlib.md5(b"driver").hexdigest()
+        u.CURRENT_DRIVER_MD5 = digest
+        self.assertFalse(u.migration_reboots())
+        u.CURRENT_DRIVER_MD5, u.LEGACY_DRIVER_MD5 = "0" * 32, digest
+        self.assertFalse(u.migration_reboots())  # legacy driver is fine without hdmi_version
+        hdmi.write_text("u")
+        self.assertTrue(u.migration_reboots())  # but not for HDMI version 2
+        driver.unlink()
+        self.assertTrue(u.migration_reboots())
+
     def test_new_version_that_does_not_stay_up_is_reported(self):
         self.u.started = lambda: False
         path, digest = self.package("2.5.4.1")
@@ -291,7 +351,9 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_picoclaw_script_refuses_to_start(self):
         script = SCRIPT.parent / "init.d/S96picoclaw"
-        env = dict(os.environ, HOME=str(self.base), PICOCLAW_BIN_PATH=str(self.base / "none"))
+        env = dict(os.environ, HOME=str(self.base), PICOCLAW_BIN_PATH=str(self.base / "none"),
+                   PICOCLAW_HOME=str(self.base / "picoclaw"),
+                   PICOCLAW_PID_FILE=str(self.base / "picoclaw/.picoclaw.pid"))
         for action in ("start", "restart", "onboard"):
             result = subprocess.run(["sh", str(script), action], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1, action)
@@ -363,3 +425,76 @@ class UpdateScriptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+S95 = SCRIPT.parent / "init.d/S95nanokvm"
+
+
+def s95_function(name: str) -> str:
+    text = S95.read_text()
+    start = text.index(f"{name}() {{")
+    return text[start:text.index("\n}\n", start) + 3]
+
+
+class MicrophoneTest(unittest.TestCase):
+    """disable_audio_capture from S95nanokvm against a fake sysfs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = pathlib.Path(self.tmp.name)
+        sound = self.base / "sys/class/sound"
+        for card, device in (("0", "adc"), ("1", "dac")):
+            (sound / f"card{card}").mkdir(parents=True)
+            (self.base / f"sys/devices/{device}").mkdir(parents=True)
+            os.symlink(self.base / f"sys/devices/{device}", sound / f"card{card}/device")
+            (self.base / f"drv{card}").mkdir()
+            (self.base / f"drv{card}/unbind").write_text("")
+            os.symlink(self.base / f"drv{card}", self.base / f"sys/devices/{device}/driver")
+        (sound / "pcmC0D0c").write_text("")
+        (sound / "pcmC1D0p").write_text("")
+        (self.base / "run").mkdir()
+        (self.base / "etc/kvm").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_disable(self, unbind_removes=True):
+        body = (s95_function("capture_cards") + s95_function("disable_audio_capture"))
+        for path in ("/sys/class/sound", "/run/", "/etc/kvm"):
+            body = body.replace(path, f"{self.base}{path}")
+        script = body + "\ndisable_audio_capture\n"
+        if unbind_removes:
+            # The kernel drops the card once its driver is unbound.
+            script = script.replace(
+                'basename "$dev" > "$dev/driver/unbind" 2>/dev/null',
+                'basename "$dev" > "$dev/driver/unbind" 2>/dev/null && rm -f "$(dirname "$(dirname "$dev")")/class/sound/pcmC${card}D0c"')
+        result = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        return result, (self.base / "run/nanokvm-microphone").read_text().strip()
+
+    def test_capture_card_is_unbound(self):
+        result, status = self.run_disable()
+        self.assertEqual((self.base / "drv0/unbind").read_text().strip(), "adc")
+        self.assertEqual((self.base / "drv1/unbind").read_text(), "")  # playback card untouched
+        self.assertEqual(status, "off")
+
+    def test_failure_is_recorded(self):
+        result, status = self.run_disable(unbind_removes=False)
+        self.assertTrue(status.startswith("FAILED"), status)
+        self.assertIn("could not be disabled", result.stderr)
+
+    def test_enable_file_keeps_it_and_reports_state(self):
+        (self.base / "etc/kvm/enable-microphone").write_text("")
+        result, status = self.run_disable()
+        self.assertEqual((self.base / "drv0/unbind").read_text(), "")
+        self.assertEqual(status, "on")
+
+    def test_start_and_restart_both_run_the_boot_steps(self):
+        start_services = s95_function("start_services")
+        first_lines = start_services.splitlines()[1:6]
+        self.assertTrue(any("disable_audio_capture" in line for line in first_lines))
+        self.assertTrue(any("disable_picoclaw" in line for line in first_lines))
+        text = S95.read_text()
+        for action in ("start)", "restart)"):
+            branch = text[text.index(f"  {action}"):]
+            branch = branch[:branch.index(";;")]
+            self.assertIn("start_services", branch, action)

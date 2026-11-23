@@ -1,7 +1,6 @@
 package application
 
 import (
-	"archive/tar"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
@@ -16,16 +15,7 @@ import (
 // fourPartArchive writes a minimal package nanokvm_<name>.tar.gz whose version file says inner.
 func fourPartArchive(t *testing.T, name, inner string) string {
 	t.Helper()
-	root := "nanokvm_" + name
-	return writeTestArchive(t, []archiveEntry{
-		{name: root, typeFlag: tar.TypeDir},
-		{name: root + "/version", typeFlag: tar.TypeReg, data: inner + "\n"},
-		{name: root + "/server/NanoKVM-Server", typeFlag: tar.TypeReg, data: "server"},
-		{name: root + "/kvm_system/kvm_system", typeFlag: tar.TypeReg, data: "system"},
-		{name: root + "/system/init.d/S95nanokvm", typeFlag: tar.TypeReg, data: "init"},
-		{name: root + "/system/update-nanokvm.py", typeFlag: tar.TypeReg, data: "py"},
-		{name: root + "/kvm_new_app", typeFlag: tar.TypeReg},
-	})
+	return writeTestArchive(t, packageEntries("nanokvm_"+name, inner, ""))
 }
 
 // The offline path derives root and version from the uploaded file name.
@@ -55,22 +45,29 @@ func TestOfflinePackageKeepsFourPartVersion(t *testing.T) {
 	}
 }
 
-func TestExtractedPackageNeedsMigrationMarker(t *testing.T) {
+func TestExtractedPackageNeedsEveryMigrationFile(t *testing.T) {
 	root := "nanokvm_2.5.4.1"
-	archive := writeTestArchive(t, []archiveEntry{
-		{name: root, typeFlag: tar.TypeDir},
-		{name: root + "/version", typeFlag: tar.TypeReg, data: "2.5.4.1\n"},
-		{name: root + "/server/NanoKVM-Server", typeFlag: tar.TypeReg, data: "server"},
-		{name: root + "/kvm_system/kvm_system", typeFlag: tar.TypeReg, data: "system"},
-		{name: root + "/system/init.d/S95nanokvm", typeFlag: tar.TypeReg, data: "init"},
-		{name: root + "/system/update-nanokvm.py", typeFlag: tar.TypeReg, data: "py"},
-	})
-	extracted, err := extractUpdateArchive(archive, t.TempDir(), root)
-	if err != nil {
-		t.Fatal(err)
+	for _, missing := range requiredPackageFiles[1:] {
+		archive := writeTestArchive(t, packageEntries(root, "2.5.4.1", missing))
+		extracted, err := extractUpdateArchive(archive, t.TempDir(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateExtractedPackage(extracted, "2.5.4.1"); err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("package without %s: got %v", missing, err)
+		}
 	}
-	if err := validateExtractedPackage(extracted, "2.5.4.1"); err == nil {
-		t.Fatal("a package without kvm_new_app must be rejected")
+}
+
+func TestShippedAppHasEveryRequiredFile(t *testing.T) {
+	for _, file := range requiredPackageFiles {
+		switch file {
+		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system":
+			continue // produced by the build
+		}
+		if _, err := os.Stat(filepath.Join("..", "..", "..", "kvmapp", filepath.FromSlash(file))); err != nil {
+			t.Errorf("kvmapp/%s is required in packages but missing from the repository", file)
+		}
 	}
 }
 

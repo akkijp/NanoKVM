@@ -36,6 +36,7 @@ git -C "$REPO" fetch -q --no-tags origin "$SHA"
 
 TREE="$(mktemp -d)/NanoKVM"
 cleanup() {
+    [ -n "${IMAGE:-}" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
     git -C "$REPO" worktree remove --force "$TREE" 2>/dev/null || true
     rm -rf "$(dirname "$TREE")"
 }
@@ -43,7 +44,9 @@ trap cleanup EXIT
 git -C "$REPO" worktree add -q --detach "$TREE" "$SHA"
 cd "$TREE"
 
-make release VERSION="$VERSION" DOCKER_TTY=
+# A builder image of its own, so a parallel release build cannot retag the one this uses.
+IMAGE="nanokvm-builder-release-$VERSION-$$"
+make release VERSION="$VERSION" DOCKER_TTY= IMAGE_NAME="$IMAGE"
 
 scripts/verify-release-assets.sh build/release "$VERSION"
 if [ "$(git rev-parse HEAD)" != "$SHA" ] || [ -n "$(git status --porcelain --untracked-files=no)" ]; then

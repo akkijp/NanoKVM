@@ -77,7 +77,25 @@ REQUIRED_FILES = (
     # Tells kvm_system to run its migration, which installs the new init
     # scripts and this updater into /etc.
     "kvm_new_app",
+    # Copied unconditionally by that migration (system_init.cpp new_app_init).
+    "system/init.d/S00kmod",
+    "system/init.d/S01fs",
+    "system/init.d/S03usbdev",
+    "system/init.d/S15kvmhwd",
+    "system/init.d/S30eth",
+    "system/init.d/S30wifi",
+    "system/init.d/S50sshd",
+    "system/init.d/S98tailscaled",
+    "system/ko/soph_mipi_rx.ko",
 )
+
+# The migration replaces the HDMI driver and reboots unless the installed one is
+# current. Keep in sync with new_app_init() in
+# support/sg2002/kvm_system/main/lib/system_init/system_init.cpp.
+DRIVER = "/mnt/system/ko/soph_mipi_rx.ko"
+HDMI_VERSION = "/etc/kvm/hdmi_version"
+CURRENT_DRIVER_MD5 = "69be7eeded3777f750480a5dd5a1aa26"
+LEGACY_DRIVER_MD5 = "086ed01749188975afaa40fb569374f8"
 
 
 class UpdateError(Exception):
@@ -262,14 +280,41 @@ def stopped() -> bool:
     return False
 
 
+def migration_reboots() -> bool:
+    """Whether the new version's first start will replace the HDMI driver and reboot."""
+    try:
+        with open(DRIVER, "rb") as f:
+            digest = hashlib.md5(f.read()).hexdigest()
+    except OSError:
+        return True
+    hdmi = -1
+    try:
+        with open(HDMI_VERSION, "rb") as f:
+            first = f.read(1)
+        hdmi = {b"c": 1, b"u": 2, b"d": 2}.get(first, -1)
+    except OSError:
+        pass
+    current = digest == CURRENT_DRIVER_MD5 or (hdmi != 2 and digest == LEGACY_DRIVER_MD5)
+    return not current
+
+
+def check_not_interrupted() -> None:
+    """Refuse to start over a half-finished earlier switch; /root/old may be the only copy."""
+    if not os.path.isfile(os.path.join(APP_DIR, "version")):
+        raise UpdateError(
+            f"{APP_DIR} is missing or incomplete (an earlier update was interrupted). Nothing was "
+            f"changed; {BACKUP_DIR} and {STAGE_DIR} are kept. Recover as described in FORK.md"
+        )
+
+
 def stop_old() -> None:
-    """Stop the running app and confirm both daemons are gone; retries cover another service
-    operation holding the init script's lock. On failure nothing has been changed."""
+    """Stop the running app: the init script must succeed (it fails while another service
+    operation holds its lock, so that is retried) and both daemons must be gone.
+    On failure nothing has been changed."""
     for attempt in range(3):
         if attempt:
             time.sleep(5)
-        service(STOP_SCRIPT, "stop")
-        if stopped():
+        if service(STOP_SCRIPT, "stop") == 0 and stopped():
             return
     # A partial stop can leave the web server down. Bring the old version back up.
     if not all(running(d) for d in DAEMONS):
@@ -302,6 +347,8 @@ def switch() -> None:
 
 
 def install(source_dir: str, version: str) -> None:
+    check_not_interrupted()
+    reboots = migration_reboots()
     prepare(source_dir)
     if os.path.exists(STAGE_DIR):
         shutil.rmtree(STAGE_DIR)
@@ -316,10 +363,21 @@ def install(source_dir: str, version: str) -> None:
         switch()
     except Exception as e:
         shutil.rmtree(STAGE_DIR, ignore_errors=True)
-        service(app_script(), "restart")
-        raise UpdateError(f"could not put the new version in place; the previous version was started again: {e}")
+        if service(app_script(), "restart") == 0 and started():
+            raise UpdateError(f"could not put the new version in place; the previous version was started again: {e}")
+        raise UpdateError(
+            f"could not put the new version in place ({e}), and the previous version did not start "
+            "again either. Recover as described in FORK.md"
+        )
     os.sync()
 
+    if reboots:
+        print(
+            f"{version} is installed. Its first start replaces the HDMI driver and reboots the device. "
+            "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server kvm_system"
+        )
+        service(app_script(), "restart")
+        return
     if service(app_script(), "restart") != 0 or not started():
         raise UpdateError(
             f"{version} is installed but did not start. The previous version is in {BACKUP_DIR}; "
