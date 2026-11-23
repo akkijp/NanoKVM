@@ -128,11 +128,24 @@ func writePending(record pendingRecord) error {
 	if err := os.Rename(tmpPath, restartPendingPath); err != nil {
 		return fmt.Errorf("record the pending restart: %w", err)
 	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("record the pending restart: %w", err)
 	}
 	return nil
+}
+
+// syncDir makes a rename in dir durable. A variable so tests can make it fail.
+var syncDir = func(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func clearPending() error {

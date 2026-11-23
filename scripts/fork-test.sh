@@ -14,6 +14,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/fork-env.sh"
 LOGS="$(mktemp -d)"  # per run: a root-owned leftover from an accidental sudo run cannot block it
+COPY=""
+IMAGE=""
+cleanup() {
+    status=$?
+    [ -n "$IMAGE" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
+    [ -n "$COPY" ] && rm -rf "$(dirname "$COPY")"
+    if [ "$status" -eq 0 ]; then
+        rm -rf "$LOGS"
+    else
+        echo "== FAILED; logs kept in $LOGS" >&2
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Builder image (docker/Dockerfile: pinned downloads, SDK build; cached layers are reused)"
@@ -50,7 +64,6 @@ if [ "${FORK_TEST_QUICK:-}" != 1 ]; then
     echo "== Release build (set FORK_TEST_QUICK=1 to skip)"
     COPY="$(mktemp -d)/NanoKVM"
     IMAGE="nanokvm-builder-forktest-$$"
-    trap 'docker image rm -f "$IMAGE" >/dev/null 2>&1; rm -rf "$(dirname "$COPY")"' EXIT
     mkdir -p "$COPY"
     (cd "$ROOT" && tar --exclude=./build --exclude=./web/node_modules --exclude=./web/dist -cf - .) | tar -C "$COPY" -xf -
     (cd "$COPY" && make release VERSION=0.0.0.1 DOCKER_TTY= IMAGE_NAME="$IMAGE") > "$LOGS/release.log" 2>&1 \

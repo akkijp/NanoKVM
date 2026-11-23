@@ -437,9 +437,10 @@ def stopped() -> bool:
     return False
 
 
-def migration_reboots() -> bool:
-    """Whether the new version's first start will replace the HDMI driver and reboot.
-    Raises when that first start would fail on this device (new_app_init returns
+def migration_reboots(new_init_script: str) -> bool:
+    """Whether the new version's first start will reboot: it does when it replaces the HDMI
+    driver, and (akkijp fork) when it replaces the init script, so that the new S95nanokvm does
+    the start. Raises when that first start would fail on this device (new_app_init returns
     APP_INIT_FAILED), so nothing is stopped for an update that cannot start."""
     try:
         with open(DRIVER, "rb") as f:
@@ -457,7 +458,14 @@ def migration_reboots() -> bool:
             raise UpdateError(f"the new version's first start would fail: {HDMI_VERSION} is empty")
         hdmi = {b"c": 1, b"u": 2, b"d": 2}.get(first, -1)
     current = digest == CURRENT_DRIVER_MD5 or (hdmi != 2 and digest == LEGACY_DRIVER_MD5)
-    return not current
+    if not current:
+        return True
+    # Checked last: the checks above can refuse the update and must always run.
+    try:
+        with open(new_init_script, "rb") as new, open(STOP_SCRIPT, "rb") as installed:
+            return new.read() != installed.read()
+    except OSError:
+        return True
 
 
 # Present in every app version; a tree without them is being moved by another update.
@@ -707,11 +715,24 @@ def check_same_filesystem() -> None:
             raise UpdateError(f"{path} is not on the same filesystem as {APP_DIR}; nothing was changed")
 
 
+def read_previous_version() -> str:
+    """The running version, read and validated before anything is stopped."""
+    try:
+        with open(os.path.join(APP_DIR, "version"), "rb") as f:
+            value = f.read().decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError) as e:
+        raise UpdateError(f"cannot read {APP_DIR}/version ({e}); nothing was changed")
+    if not value or "\n" in value or len(value) > 64:
+        raise UpdateError(f"{APP_DIR}/version is not a version; nothing was changed")
+    return value
+
+
 def install(source_dir: str, version: str) -> None:
     check_not_interrupted()
     check_same_filesystem()
     check_backup_removable()
-    reboots = migration_reboots()
+    previous = read_previous_version()
+    reboots = migration_reboots(os.path.join(source_dir, APP_INIT_SCRIPT))
     prepare(source_dir)
     if os.path.lexists(STAGE_DIR):
         raise UpdateError(f"{STAGE_DIR} exists; move it away first")
@@ -719,10 +740,10 @@ def install(source_dir: str, version: str) -> None:
         f.write("staged by update-nanokvm.py\n")
     shutil.move(source_dir, STAGE_DIR)
     with Uninterruptible():
-        switch_and_start(version, reboots)
+        switch_and_start(version, reboots, previous)
 
 
-def switch_and_start(version: str, reboots: bool) -> None:
+def switch_and_start(version: str, reboots: bool, previous: str) -> None:
     try:
         stop_old()
     except UpdateError:
@@ -735,13 +756,20 @@ def switch_and_start(version: str, reboots: bool) -> None:
         service(STOP_SCRIPT, "restart")
         raise
 
-    previous = read_version(APP_DIR)
     try:
         set_restart_pending("switching", previous, version)
     except OSError as e:
         drop_stage()
+        # Nothing was switched. A record may still have become visible (e.g. the directory sync
+        # failed after the rename); take it back, or S95nanokvm would refuse to start the old app.
+        note = ""
+        try:
+            clear_restart_pending()
+        except OSError as clear_error:
+            note = (f" The record {RESTART_PENDING} could not be removed ({clear_error}); remove it "
+                    "by hand after checking that /kvmapp is the previous version (FORK.md).")
         outcome = restart_previous(STOP_SCRIPT)
-        raise UpdateError(f"could not record the pending restart ({e}); nothing was installed, and {outcome}")
+        raise UpdateError(f"could not record the pending restart ({e}); nothing was installed, and {outcome}.{note}")
     try:
         switch()
     except Exception as e:

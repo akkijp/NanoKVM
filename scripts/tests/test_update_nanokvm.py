@@ -60,7 +60,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.running = lambda name: False
         self.u.daemons_run_app = lambda since: False
         self.real_migration_reboots = self.u.migration_reboots
-        self.u.migration_reboots = lambda: False
+        self.u.migration_reboots = lambda new_init: False
         self.u.check_same_filesystem = lambda: None
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
         app = pathlib.Path(self.u.APP_DIR)
@@ -755,7 +755,7 @@ class UpdateScriptTest(unittest.TestCase):
         def killed_by_reboot(seconds):
             raise Rebooted()
 
-        self.u.migration_reboots = lambda: True
+        self.u.migration_reboots = lambda new_init: True
         self.u.started = lambda: False  # the daemons never come up in this boot
         self.u.time = types.SimpleNamespace(sleep=killed_by_reboot, monotonic=__import__("time").monotonic)
         path, digest = self.package("2.5.4.1")
@@ -765,13 +765,13 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual(self.installed_version(), "2.5.4.1")
 
     def test_driver_reboot_that_fails_first_is_reported(self):
-        self.u.migration_reboots = lambda: True
+        self.u.migration_reboots = lambda new_init: True
         path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
         with self.assertRaisesRegex(self.u.UpdateError, "failed before rebooting"):
             self.run_update(file=path, sha512=digest)
 
     def test_driver_reboot_that_never_happens_is_reported(self):
-        self.u.migration_reboots = lambda: True
+        self.u.migration_reboots = lambda new_init: True
         self.u.started = lambda: False
         path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "neither rebooted nor started"):
@@ -791,21 +791,67 @@ class UpdateScriptTest(unittest.TestCase):
         u = load()
         driver, hdmi = self.base / "driver.ko", self.base / "hdmi_version"
         u.DRIVER, u.HDMI_VERSION = str(driver), str(hdmi)
+        same = self.base / "S95-same"  # the installed init script, unchanged by the update
+        same.write_bytes(b"#!/bin/sh\n")
+        u.STOP_SCRIPT = str(same)
         driver.write_bytes(b"driver")
         digest = hashlib.md5(b"driver").hexdigest()
         u.CURRENT_DRIVER_MD5 = digest
-        self.assertFalse(u.migration_reboots())
+        self.assertFalse(u.migration_reboots(same))
         u.CURRENT_DRIVER_MD5, u.LEGACY_DRIVER_MD5 = "0" * 32, digest
-        self.assertFalse(u.migration_reboots())  # legacy driver is fine without hdmi_version
+        self.assertFalse(u.migration_reboots(same))  # legacy driver is fine without hdmi_version
         hdmi.write_text("u")
-        self.assertTrue(u.migration_reboots())  # but not for HDMI version 2
+        self.assertTrue(u.migration_reboots(same))  # but not for HDMI version 2
         hdmi.write_text("")
         with self.assertRaisesRegex(u.UpdateError, "is empty"):
-            u.migration_reboots()  # new_app_init fails on an empty hdmi_version
+            u.migration_reboots(same)  # new_app_init fails on an empty hdmi_version
         hdmi.unlink()
         driver.unlink()
         with self.assertRaisesRegex(u.UpdateError, "cannot read"):
-            u.migration_reboots()  # new_app_init fails when md5sum of the driver fails
+            u.migration_reboots(same)  # new_app_init fails when md5sum of the driver fails
+
+    def test_a_changed_init_script_means_a_reboot(self):
+        u = load()
+        driver = self.base / "driver.ko"
+        driver.write_bytes(b"driver")
+        u.DRIVER, u.HDMI_VERSION = str(driver), str(self.base / "none")
+        u.CURRENT_DRIVER_MD5 = __import__("hashlib").md5(b"driver").hexdigest()
+        installed, new = self.base / "S95-installed", self.base / "S95-new"
+        installed.write_bytes(b"#!/bin/sh\n# upstream\n")
+        new.write_bytes(b"#!/bin/sh\n# fork\n")
+        u.STOP_SCRIPT = str(installed)
+        self.assertTrue(u.migration_reboots(str(new)))  # first install over an upstream S95
+        new.write_bytes(installed.read_bytes())
+        self.assertFalse(u.migration_reboots(str(new)))
+
+    def test_kvm_system_reboots_when_it_replaces_the_init_script(self):
+        source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()
+        self.assertIn("cmp -s /kvmapp/system/init.d/S95nanokvm /etc/init.d/S95nanokvm", source)
+        self.assertIn("(current_driver && !init_script_changed) ? APP_INIT_OK : APP_INIT_REBOOT", source)
+
+    def test_unreadable_previous_version_is_refused_before_stop(self):
+        (pathlib.Path(self.u.APP_DIR) / "version").write_bytes(b"\xff\xfe")
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "cannot read"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual(self.calls(), "")
+
+    def test_record_made_visible_before_a_failed_sync_is_taken_back(self):
+        real_fsync = os.fsync
+        calls = {"n": 0}
+
+        def fsync(fd):
+            calls["n"] += 1
+            if calls["n"] == 2:  # the directory sync after the rename
+                raise OSError("I/O error")
+            return real_fsync(fd)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.fsync, self.u.os.path = fsync, os.path
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("could not record the pending restart", file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
+        self.assertTrue(self.calls().splitlines()[-1].endswith("restart"))
 
     def test_missing_driver_is_refused_before_stop(self):
         self.u.migration_reboots = self.real_migration_reboots
@@ -1117,8 +1163,11 @@ sleep() {{ :; }}
             (installed, "2.5.4.1", False, False),     # a daemon died
             (installed, "2.4.3", True, False),        # another version was started
         )
+        base = self.base
         for content, started_version, daemons_up, cleared in cases:
             with self.subTest(content=content, version=started_version, daemons_up=daemons_up):
+                # A fresh tree per case: a monitor left by one case cannot touch the next.
+                self.base = pathlib.Path(tempfile.mkdtemp(dir=base))
                 fake = self.base / "fs"
                 record = fake / "etc/kvm/update-restart-pending"
                 record.parent.mkdir(parents=True, exist_ok=True)
@@ -1126,11 +1175,9 @@ sleep() {{ :; }}
                 (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
                 (fake / "kvmapp/version").write_text(started_version + "\n")
                 self.run_s95("start", pidof_after_start=daemons_up)
-                for _ in range(60):  # the check runs in the background
-                    if record.exists() != cleared:
-                        break
-                    __import__("time").sleep(0.05)
+                __import__("time").sleep(2)  # the monitor waits 1 s, then decides; let it finish
                 self.assertEqual(record.exists(), not cleared)
+        self.base = base
 
     def test_half_way_record_stops_start_and_restart_before_anything_runs(self):
         for content in ('{"from":"2.4.3","to":"2.5.4.1","phase":"switching"}', "", "garbage",

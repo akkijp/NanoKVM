@@ -104,20 +104,34 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     setIsLocked(true);
     setStatus('updating');
 
+    const refused = (message: string) => {
+      // Not restarting: unlock, say why, and keep the retry available.
+      setIsLocked(false);
+      setStatus('restartPending');
+      setErrMsg(message);
+    };
+
     api
       .retryRestart()
       .then((rsp: any) => {
         if (rsp.code !== 0) {
-          setStatus('failed');
-          setErrMsg(rsp.msg || t('settings.update.updateFailed'));
+          refused(rsp.msg || t('settings.update.updateFailed'));
+          return;
         }
-      })
-      .finally(() => {
+        if (!rsp.data?.restarting) {
+          // Nothing to restart any more (it settled meanwhile): show the current state.
+          setIsLocked(false);
+          checkForUpdates();
+          return;
+        }
         setTimeout(() => {
           setIsLocked(false);
           setErrMsg('');
           window.location.reload();
         }, 12000);
+      })
+      .catch((error: unknown) => {
+        refused(error instanceof Error ? error.message : t('settings.update.updateFailed'));
       });
   }
 
@@ -202,7 +216,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           <Result
             status="warning"
             title={latestVersion || currentVersion}
-            subTitle={t('settings.update.restartPending')}
+            subTitle={errMsg ? `${t('settings.update.restartPending')} (${errMsg})` : t('settings.update.restartPending')}
             extra={[
               <Button key="retry" type="primary" onClick={retryRestart}>
                 {t('settings.update.retryRestart')}

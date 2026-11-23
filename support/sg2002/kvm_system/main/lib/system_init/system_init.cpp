@@ -124,6 +124,11 @@ AppInitResult new_app_init(void)
 	system("rmmod soph_saradc");
 	system("rm -f /mnt/system/ko/soph_saradc.ko");
 
+	// akkijp fork: when this migration replaces the init script, the script running right now
+	// (e.g. an upstream one) must not go on to start the new app: it does not switch off the
+	// microphone or picoclaw. Reboot instead, so the new S95nanokvm does the start.
+	bool init_script_changed = system("cmp -s /kvmapp/system/init.d/S95nanokvm /etc/init.d/S95nanokvm") != 0;
+
 	// Keep an already running legacy shell on its original script inode.
 	if(!init_command("cp /kvmapp/system/init.d/S95nanokvm /etc/init.d/.S95nanokvm.new && "
 	                 "chmod 755 /etc/init.d/.S95nanokvm.new && "
@@ -175,7 +180,7 @@ AppInitResult new_app_init(void)
 
 	if(unlink("/kvmapp/kvm_new_app") != 0) return APP_INIT_FAILED;
 	sync();
-	return current_driver ? APP_INIT_OK : APP_INIT_REBOOT;
+	return (current_driver && !init_script_changed) ? APP_INIT_OK : APP_INIT_REBOOT;
 }
 
 void build_complete_resolv(void)

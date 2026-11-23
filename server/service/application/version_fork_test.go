@@ -2,6 +2,7 @@ package application
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -449,5 +450,31 @@ func TestWritePendingNeverLeavesAPartialRecord(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), ".update-restart-pending.") {
 			t.Fatalf("temporary file left behind: %s", entry.Name())
 		}
+	}
+}
+
+func TestDirectorySyncFailureLeavesTheAppUntouched(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncDir
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	syncDir = func(string) error { return fmt.Errorf("I/O error") }
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, syncDir = oldPending, oldApp, oldBackup, oldSync
+	})
+	if err := os.MkdirAll(installAppDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil {
+		t.Fatal("install must stop when the record cannot be made durable")
+	}
+	if readVersionFile(installAppDir) != "2.5.4.1" {
+		t.Fatal("the app was touched")
+	}
+	if _, err := os.Stat(restartPendingPath); err == nil {
+		t.Fatal("a record of a switch that never started was left behind")
 	}
 }

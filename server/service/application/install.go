@@ -67,6 +67,9 @@ func installPreparedPackage(sourceDir string) error {
 		return fmt.Errorf("failed to remove backup: %w", err)
 	}
 	if err := writePending(record); err != nil {
+		// Nothing was moved. A record that became visible before the failure would stop the next
+		// boot: take it back.
+		_ = clearPending()
 		return err
 	}
 	oldFiles, err := listFiles(installAppDir)
