@@ -161,6 +161,9 @@ def fetch_manifest(version: str, work: str) -> dict:
         raise UpdateError("invalid latest.json: name does not match version")
     if not isinstance(manifest.get("sha512"), str):
         raise UpdateError("invalid latest.json: missing sha512")
+    size = manifest.get("size_bytes")
+    if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= MAX_PACKAGE_SIZE:
+        raise UpdateError("invalid latest.json: size_bytes")
     return manifest
 
 
@@ -336,7 +339,11 @@ def stop_old() -> None:
             return
     # A partial stop can leave the web server down. Bring the old version back up.
     if not all(running(d) for d in DAEMONS):
-        service(STOP_SCRIPT, "restart")
+        if service(STOP_SCRIPT, "restart") != 0 or not started():
+            raise UpdateError(
+                "could not stop the nanokvm service, and after the partial stop it did not come back "
+                "up. Nothing was installed; restart it with /etc/init.d/S95nanokvm restart or reboot"
+            )
     raise UpdateError("could not stop the nanokvm service; nothing was changed")
 
 
@@ -393,7 +400,7 @@ def install(source_dir: str, version: str) -> None:
         # The first start replaces the HDMI driver and reboots; this process ends with it.
         print(
             f"{version} is installed. Its first start replaces the HDMI driver and reboots the device. "
-            "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server kvm_system"
+            "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server && pidof kvm_system"
         )
         sys.stdout.flush()
         if service(app_script(), "restart") != 0:
@@ -437,6 +444,10 @@ def run(args) -> str:
 
 
 def run_locked(args, work: str) -> str:
+    if not args.dry_run and os.path.exists(STAGE_DIR):
+        # Left by a run that stopped before the switch. Keep it if the switch itself was cut short.
+        check_not_interrupted()
+        shutil.rmtree(STAGE_DIR)
     if args.file:
         if not args.sha512:
             raise UpdateError("--file requires --sha512")
@@ -454,10 +465,12 @@ def run_locked(args, work: str) -> str:
         version = manifest["version"]
         expected = parse_digest(args.sha512 or manifest["sha512"])
         package = os.path.join(work, manifest["name"])
-        size = manifest.get("size_bytes")
-        ensure_space(work, size if isinstance(size, int) and 0 < size <= MAX_PACKAGE_SIZE else MAX_PACKAGE_SIZE)
+        size = manifest["size_bytes"]
+        ensure_space(work, size)
         with open(package, "xb") as f:
-            fetch(f"{RELEASES}/download/{version}/{manifest['name']}", f, MAX_PACKAGE_SIZE)
+            fetch(f"{RELEASES}/download/{version}/{manifest['name']}", f, size)
+        if os.path.getsize(package) != size:
+            raise UpdateError(f"downloaded {os.path.getsize(package)} bytes, latest.json says {size}")
 
     if sha512_of(package) != expected:
         raise UpdateError("sha512 does not match; package not installed")

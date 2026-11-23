@@ -226,6 +226,38 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_rejected("nothing was changed", file=path, sha512=digest)
         self.assertEqual(log.read_text().split(), ["stop", "stop", "stop", "restart"])
 
+    def test_partial_stop_that_does_not_recover_is_reported(self):
+        self.u.running = lambda name: name != "NanoKVM-Server"
+        self.u.stopped = lambda: False
+        self.u.started = lambda: False
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("did not come back up", file=path, sha512=digest)
+
+    def test_partial_stop_whose_restart_fails_is_reported(self):
+        write_script(pathlib.Path(self.u.STOP_SCRIPT), FAIL_SCRIPT)
+        self.u.running = lambda name: name != "NanoKVM-Server"
+        self.u.stopped = lambda: False
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("did not come back up", file=path, sha512=digest)
+
+    def test_stale_stage_is_removed_before_unpacking(self):
+        stage = pathlib.Path(self.u.STAGE_DIR)
+        stage.mkdir()
+        (stage / "leftover").write_text("x")
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+        self.assertFalse(stage.exists())
+
+    def test_stale_stage_is_kept_after_interrupted_switch(self):
+        stage, app, old = pathlib.Path(self.u.STAGE_DIR), pathlib.Path(self.u.APP_DIR), pathlib.Path(self.u.BACKUP_DIR)
+        stage.mkdir()
+        os.rename(app, old)
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "interrupted"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue(stage.exists())
+
     def test_staging_failure_happens_before_stop(self):
         def broken(source_dir):
             raise OSError("chmod failed")
@@ -388,6 +420,7 @@ class UpdateScriptTest(unittest.TestCase):
         result = subprocess.run(["python3", str(checker), bad], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("kvm_new_app", result.stderr)
+        self.assertFalse((SCRIPT.parent / "__pycache__").exists(), "the check left bytecode in kvmapp/")
 
     # --- picoclaw init script -------------------------------------------------
 
@@ -403,10 +436,11 @@ class UpdateScriptTest(unittest.TestCase):
 
     # --- download -------------------------------------------------------------
 
-    def serve_releases(self, version, package_path, sha512):
+    def serve_releases(self, version, package_path, sha512, size_error=0):
         """Serve GitHub-like release URLs that redirect to another path, as GitHub does."""
-        manifest = json.dumps({"version": version, "name": f"nanokvm_{version}.tar.gz", "sha512": sha512}).encode()
         package = pathlib.Path(package_path).read_bytes()
+        manifest = json.dumps({"version": version, "name": f"nanokvm_{version}.tar.gz", "sha512": sha512,
+                               "size_bytes": len(package) + size_error}).encode()
         requested = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -459,6 +493,16 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.serve_releases("2.5.4.1", path, digest)
         self.assert_rejected("does not match", sha512=base64.b64encode(b"\1" * 64).decode(), dry_run=True)
+
+    def test_download_larger_than_manifest_is_refused(self):
+        path, digest = self.package("2.5.4.1")
+        self.serve_releases("2.5.4.1", path, digest, size_error=-1)
+        self.assert_rejected("larger than", dry_run=True)
+
+    def test_download_smaller_than_manifest_is_refused(self):
+        path, digest = self.package("2.5.4.1")
+        self.serve_releases("2.5.4.1", path, digest, size_error=+1)
+        self.assert_rejected("latest.json says", dry_run=True)
 
     def test_default_source_is_the_fork(self):
         self.assertEqual(load().RELEASES, "https://github.com/akkijp/NanoKVM/releases")

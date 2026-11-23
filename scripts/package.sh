@@ -94,6 +94,8 @@ mkdir -p "$STAGE"
 #    only matters for reading the archive by hand: install.go chmods the whole
 #    tree to 0755 on the device regardless.
 cp -a "$ROOT/kvmapp/." "$STAGE/"
+# akkijp fork: never ship bytecode a host-side check or test may have left in kvmapp/.
+find "$STAGE" -name __pycache__ -type d -prune -exec rm -r {} +
 
 # 2. Version marker. The updater reads /kvmapp/version to report the currently
 #    installed version (version.go).

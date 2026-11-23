@@ -18,6 +18,9 @@ UPDATER = pathlib.Path(__file__).resolve().parents[1] / "kvmapp/system/update-na
 
 
 def main() -> int:
+    # Loading the updater must not leave kvmapp/system/__pycache__ behind: package.sh copies
+    # all of kvmapp/ into the release.
+    sys.dont_write_bytecode = True
     if len(sys.argv) != 2:
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
         return 2
