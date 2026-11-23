@@ -18,6 +18,7 @@ COPY=""
 IMAGE=""
 cleanup() {
     status=$?
+    set +e  # finish the cleanup whatever fails in it
     [ -n "$IMAGE" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
     if [ -n "$COPY" ]; then
         git -C "$ROOT" worktree remove --force "$COPY" >/dev/null 2>&1
@@ -45,6 +46,12 @@ echo "== Go"
   export CGO_LDFLAGS=-L/tmp/stub LD_LIBRARY_PATH=/tmp/stub
   go vet ./service/application/ ./service/picoclaw/ ./config/
   go test ./...
+'
+
+echo "== kvm_system record parser (C++)"
+"${RUN[@]}" "$GO_IMAGE" sh -euc '
+  g++ -std=c++11 -Wall -Werror -o /tmp/pending_record_test /src/support/sg2002/kvm_system/main/lib/system_init/pending_record_test.cpp
+  /tmp/pending_record_test
 '
 
 echo "== Python updater"

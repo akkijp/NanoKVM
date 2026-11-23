@@ -1,5 +1,6 @@
 #include "config.h"
 #include "system_init.h"
+#include "pending_record.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -110,11 +111,8 @@ static bool update_switch_unfinished(void)
 	size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
 	bool more = fgetc(fp) != EOF;
 	fclose(fp);
-	if(more || n == 0) return true;
-	while(n > 0 && buf[n - 1] == '\n') buf[--n] = '\0';
-	if(strchr(buf, '\n') != NULL) return true;
-	if(buf[0] != '{' || buf[n - 1] != '}') return true;
-	return strstr(buf, "\"phase\":\"installed\"") == NULL && strstr(buf, "\"phase\": \"installed\"") == NULL;
+	if(more) return true;
+	return !pending_record::installed(buf, n);
 }
 
 AppInitResult new_app_init(void)

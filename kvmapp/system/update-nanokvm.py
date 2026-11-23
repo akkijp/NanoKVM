@@ -670,8 +670,6 @@ def switch() -> None:
     the old app is put back in APP_DIR before the error is raised."""
     moved_old = False
     try:
-        if os.path.exists(BACKUP_DIR):
-            shutil.rmtree(BACKUP_DIR)
         os.rename(APP_DIR, BACKUP_DIR)
         moved_old = True
         os.rename(STAGE_DIR, APP_DIR)
@@ -763,6 +761,15 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
             "then start with /etc/init.d/S95nanokvm start, or write the microSD card again)"
         )
 
+    # The previous backup goes first, with nothing recorded yet: if this is cut short, /kvmapp is
+    # still whole and the next boot starts it normally.
+    try:
+        if os.path.exists(BACKUP_DIR):
+            shutil.rmtree(BACKUP_DIR)
+    except OSError as e:
+        drop_stage()
+        outcome = restart_previous(STOP_SCRIPT)
+        raise UpdateError(f"could not remove the previous backup {BACKUP_DIR} ({e}); nothing was installed, and {outcome}")
     try:
         set_restart_pending("switching", previous, version)
     except OSError as e:
@@ -780,6 +787,15 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     try:
         switch()
     except Exception as e:
+        if read_version(APP_DIR) != previous:
+            # Neither the new version nor the previous one is in place (e.g. write errors on the
+            # card while putting it back). Keep everything: the record (whose "from" names the
+            # version in /root/old), the stage and the backup, for the manual recovery.
+            raise UpdateError(
+                f"could not put the new version in place ({e}), and the previous version could not be "
+                f"put back either. Nothing was removed: {BACKUP_DIR}, {STAGE_DIR} and {RESTART_PENDING} "
+                "are kept. Recover as described in FORK.md"
+            )
         drop_stage()
         # The previous version is back in place. Clearing the record and starting it again are
         # independent: a failure of one must not skip the other.

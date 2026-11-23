@@ -615,6 +615,48 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertTrue(any("installs its own init script" in m for m in said), said)
         self.assertFalse(any("HDMI" in m for m in said), said)
 
+    def test_previous_backup_is_removed_before_switching_is_recorded(self):
+        self.complete_app(self.u.BACKUP_DIR)
+        seen = []
+        real_set = self.u.set_restart_pending
+        self.u.set_restart_pending = lambda phase, a, b: (seen.append((phase, os.path.exists(self.u.BACKUP_DIR))), real_set(phase, a, b))[1]
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertEqual(seen[0], ("switching", False))
+
+    def test_failed_backup_removal_records_nothing(self):
+        self.complete_app(self.u.BACKUP_DIR)
+        real_rmtree = shutil.rmtree
+
+        def rmtree(path, *a, **kw):
+            if path == self.u.BACKUP_DIR:
+                raise OSError("I/O error")
+            real_rmtree(path, *a, **kw)
+
+        self.u.shutil = types.SimpleNamespace(**{k: getattr(shutil, k) for k in dir(shutil) if not k.startswith("__")})
+        self.u.shutil.rmtree = rmtree
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("could not remove the previous backup", file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
+
+    def test_failed_switch_and_failed_restore_keeps_everything(self):
+        real_rename = os.rename
+
+        def rename(src, dst):
+            if src == self.u.STAGE_DIR or src == self.u.BACKUP_DIR:
+                raise OSError("I/O error")  # neither the new nor the old version can be moved in
+            real_rename(src, dst)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.rename, self.u.os.path = rename, os.path
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "could not be put back either"):
+            self.run_update(file=path, sha512=digest)
+        record = json.loads(pathlib.Path(self.u.RESTART_PENDING).read_text())
+        self.assertEqual(record["from"], "2.4.3")
+        self.assertTrue(os.path.isdir(self.u.STAGE_DIR))
+        self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.3")
+
     def test_success_clears_the_record(self):
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
@@ -853,6 +895,23 @@ class UpdateScriptTest(unittest.TestCase):
         # The check comes before the first write.
         self.assertLess(body.index("update_switch_unfinished()"), body.index("init_command("))
         self.assertIn('fopen("/etc/kvm/update-restart-pending", "r")', source)
+
+    def test_kvm_system_record_parser(self):
+        # The cases live in pending_record_test.cpp; scripts/fork-test.sh always runs it with g++.
+        import shutil as sh
+        compiler = sh.which("g++") or sh.which("c++") or sh.which("clang++")
+        if not compiler:
+            self.skipTest("no C++ compiler")
+        probe = self.base / "probe.cpp"
+        probe.write_text("int main() { return 0; }\n")
+        if subprocess.run([compiler, str(probe), "-o", str(self.base / "probe")], capture_output=True).returncode != 0:
+            self.skipTest("the C++ compiler here cannot link a program")
+        source = SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/pending_record_test.cpp"
+        binary = self.base / "pending_record_test"
+        built = subprocess.run([compiler, "-std=c++11", "-o", str(binary), str(source)], capture_output=True, text=True)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_kvm_system_reboots_when_it_replaces_the_init_script(self):
         source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()
@@ -1161,6 +1220,7 @@ awk() {{ :; }}
 sync() {{ :; }}
 reboot() {{ record reboot; }}
 sleep() {{ :; }}
+{("stop_services() { " + self.stop_hook + "; }") if getattr(self, "stop_hook", None) else ""}
 """
         head, case = text.split('case "$1" in', 1)
         script = head + stubs + 'case "$1" in' + case
@@ -1237,6 +1297,27 @@ sleep() {{ :; }}
         record.write_text('{"from":"2.5.4.1","to":"2.5.4.2","phase":"installed"}\n')  # a newer update
         __import__("time").sleep(2)
         self.assertTrue(record.exists())
+
+    def test_restart_does_not_start_when_an_update_began_during_the_stop(self):
+        fake = self.base / "fs"
+        record = fake / "etc/kvm/update-restart-pending"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        (self.base / "order.log").unlink(missing_ok=True)
+        self.stop_hook = f"printf '%s\\n' '{{\"from\":\"2.4.3\",\"to\":\"2.5.4.1\",\"phase\":\"switching\"}}' > {record}"
+        order = self.run_s95("restart", expect_status=1)
+        self.assertNotIn("daemon-NanoKVM-Server", order)
+        self.assertNotIn("daemon-kvm_system", order)
+
+    def test_crlf_version_file_still_clears_the_record(self):
+        fake = self.base / "fs"
+        record = fake / "etc/kvm/update-restart-pending"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text('{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}\n')
+        (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
+        (fake / "kvmapp/version").write_bytes(b"2.5.4.1\r\n")
+        self.run_s95("start", pidof_after_start=True)
+        __import__("time").sleep(2)
+        self.assertFalse(record.exists())
 
     def test_picoclaw_failure_fails_the_start(self):
         for action in ("start", "restart"):

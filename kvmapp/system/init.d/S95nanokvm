@@ -144,6 +144,9 @@ pending_blocks_start() {
 start_services() {
     # Runs on start and restart, so an update takes effect without a reboot. If the microphone
     # stays on, the KVM still starts (it is the way in to fix it), but the start reports failure.
+    # An update may have begun replacing /kvmapp while the services were being stopped.
+    pending_blocks_start && return 1
+
     boot_status=0
     disable_audio_capture || boot_status=1
     disable_picoclaw || boot_status=1
@@ -180,7 +183,7 @@ start_services() {
     if [ -f "$PENDING" ]; then
         pending_to="$(sed -n 's/.*"to": *"\([^"]*\)".*/\1/p' "$PENDING")"
         if pending_installed && [ -n "$pending_to" ] \
-            && [ "$pending_to" = "$(cat /kvmapp/version 2>/dev/null)" ]; then
+            && [ "$pending_to" = "$(tr -d ' \t\r\n' < /kvmapp/version 2>/dev/null)" ]; then
             pending_sum="$(cksum < "$PENDING")"
             (sleep 15
              kill -0 "$kvm_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null \

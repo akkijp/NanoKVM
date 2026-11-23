@@ -22,6 +22,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const [microphone, setMicrophone] = useState('');
   const versionRequestRef = useRef(0);
   const recheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // While watching an update or a restart, a failed request (the server restarting) is retried
+  // until this time instead of ending in "failed".
+  const watchUntilRef = useRef(0);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -53,15 +56,14 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
         // the restart; if it stopped half-way, only manual recovery is safe.
         setMicrophone(rsp.data.microphone || '');
+        if (!rsp.data.restartPending) watchUntilRef.current = 0; // settled
         if (rsp.data.restartPending) {
           setLatestVersion(rsp.data.pendingVersion || '');
           if (rsp.data.restartPhase === 'confirming' || rsp.data.restartPhase === 'updating') {
             // Restarted; the device is checking that both daemons stay up. Look again shortly.
             setStatus(rsp.data.restartPhase === 'updating' ? 'updating' : 'confirming');
-            if (mountedRef.current) {
-              if (recheckTimerRef.current) clearTimeout(recheckTimerRef.current);
-              recheckTimerRef.current = setTimeout(checkForUpdates, 5000);
-            }
+            if (!watchUntilRef.current) watchUntilRef.current = Date.now() + 5 * 60 * 1000;
+            scheduleRecheck();
           } else {
             setStatus(rsp.data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
           }
@@ -92,10 +94,20 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         }
       })
       .catch(() => {
-        if (requestId !== versionRequestRef.current) return;
+        if (requestId !== versionRequestRef.current || !mountedRef.current) return;
+        if (Date.now() < watchUntilRef.current) {
+          scheduleRecheck(); // probably the restart: keep the current view and ask again
+          return;
+        }
         setStatus('failed');
         setErrMsg(t('settings.update.queryFailed'));
       });
+  }
+
+  function scheduleRecheck() {
+    if (!mountedRef.current) return;
+    if (recheckTimerRef.current) clearTimeout(recheckTimerRef.current);
+    recheckTimerRef.current = setTimeout(checkForUpdates, 5000);
   }
 
   function retryRestart() {
