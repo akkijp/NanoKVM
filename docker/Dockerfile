@@ -5,14 +5,14 @@ ARG UBUNTU_SNAPSHOT=20261120T000000Z
 
 # RUN echo 'Acquire::http::Proxy "http://cache.lan:3142";' > /etc/apt/apt.conf.d/00cacher
 RUN userdel -r ubuntu
-# snapshot.ubuntu.com is HTTPS-only, so ca-certificates comes from the regular archive first
-# (signed by Ubuntu like every package; only its version is not pinned).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && sed -i -E "s#^URIs: http://(archive|security).ubuntu.com/ubuntu/#URIs: https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/#" \
+# snapshot.ubuntu.com is HTTPS-only and the base image has no CA bundle. Take the bundle from a
+# digest-pinned image, so every package, ca-certificates included, comes from the snapshot.
+COPY --from=golang:1.25.0@sha256:5502b0e56fca23feba76dbc5387ba59c593c02ccc2f0f7355871ea9a0852cebe \
+    /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN sed -i -E "s#^URIs: http://(archive|security).ubuntu.com/ubuntu/#URIs: https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/#" \
         /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get update \
-    && apt-get install -y wget git cmake build-essential python3 python3-venv python3-pip autoconf automake libtool gosu patchelf
+    && apt-get install -y ca-certificates wget git cmake build-essential python3 python3-venv python3-pip autoconf automake libtool gosu patchelf
 
 ARG DOCKER_USER=build
 ARG DOCKER_UID=1000

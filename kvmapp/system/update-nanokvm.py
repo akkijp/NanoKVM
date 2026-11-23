@@ -61,11 +61,15 @@ DAEMONS = ("NanoKVM-Server", "kvm_system")
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
 START_STABLE = 15
+REBOOT_WAIT = 120
 
 MAX_PACKAGE_SIZE = 1 << 30
 MAX_EXPANDED_SIZE = 2 << 30
 MAX_ENTRIES = 100_000
 MAX_MANIFEST_SIZE = 64 << 10
+# Free space left after writing, as the web updater keeps (storage.go reserveBytes).
+MIN_FREE_RESERVE = 128 << 20
+FREE_RESERVE_PERCENT = 5
 
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$")
 REQUIRED_FILES = (
@@ -160,6 +164,17 @@ def fetch_manifest(version: str, work: str) -> dict:
     return manifest
 
 
+def ensure_space(path: str, needed: int) -> None:
+    st = os.statvfs(path)
+    total, available = st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
+    reserve = max(MIN_FREE_RESERVE, total * FREE_RESERVE_PERCENT // 100)
+    if available < needed + reserve:
+        raise UpdateError(
+            f"not enough space on {path}: need {(needed + reserve) >> 20} MiB including the reserve, "
+            f"{available >> 20} MiB available"
+        )
+
+
 def sha512_of(path: str) -> bytes:
     h = hashlib.sha512()
     with open(path, "rb") as f:
@@ -186,7 +201,7 @@ def version_from_name(path: str) -> str:
     return m.group(1)
 
 
-def check_members(archive: tarfile.TarFile, root: str) -> list:
+def check_members(archive: tarfile.TarFile, root: str) -> tuple:
     members, seen, expanded, has_root = [], set(), 0, False
     for member in archive:
         name = member.name
@@ -214,7 +229,7 @@ def check_members(archive: tarfile.TarFile, root: str) -> list:
         members.append(member)
     if not has_root:
         raise UpdateError(f"archive has no {root}/ directory")
-    return members
+    return members, expanded
 
 
 def extract(package: str, version: str, work: str) -> str:
@@ -222,7 +237,10 @@ def extract(package: str, version: str, work: str) -> str:
     dest = os.path.join(work, "extract")
     os.mkdir(dest)
     with tarfile.open(package, "r:gz") as archive:
-        members = check_members(archive, root)
+        members, expanded = check_members(archive, root)
+        ensure_space(dest, expanded)
+        # The staged copy may land on another filesystem than the work directory.
+        ensure_space(os.path.dirname(STAGE_DIR) or "/", expanded)
         for member in members:
             target = os.path.join(dest, *member.name.split("/"))
             if member.isdir():
@@ -372,13 +390,21 @@ def install(source_dir: str, version: str) -> None:
     os.sync()
 
     if reboots:
+        # The first start replaces the HDMI driver and reboots; this process ends with it.
         print(
             f"{version} is installed. Its first start replaces the HDMI driver and reboots the device. "
             "When it is back, check: cat /kvmapp/version; pidof NanoKVM-Server kvm_system"
         )
-        service(app_script(), "restart")
-        return
-    if service(app_script(), "restart") != 0 or not started():
+        sys.stdout.flush()
+        if service(app_script(), "restart") != 0:
+            raise UpdateError(
+                f"{version} is installed but its first start failed before rebooting. The previous "
+                f"version is in {BACKUP_DIR}; recover as described in FORK.md"
+            )
+        time.sleep(REBOOT_WAIT)  # still alive afterwards: it did not reboot after all
+        if not started():
+            raise UpdateError(f"{version} is installed but neither rebooted nor started; see FORK.md")
+    elif service(app_script(), "restart") != 0 or not started():
         raise UpdateError(
             f"{version} is installed but did not start. The previous version is in {BACKUP_DIR}; "
             "to recover, write the official NanoKVM image to the microSD card (see FORK.md)"
@@ -419,6 +445,7 @@ def run_locked(args, work: str) -> str:
             raise UpdateError("--version does not match the file name")
         expected = parse_digest(args.sha512)
         package = os.path.join(work, os.path.basename(args.file))
+        ensure_space(work, os.path.getsize(args.file))
         copy_limited(args.file, package, MAX_PACKAGE_SIZE)
     else:
         if args.version and not VERSION_RE.match(args.version):
@@ -427,6 +454,8 @@ def run_locked(args, work: str) -> str:
         version = manifest["version"]
         expected = parse_digest(args.sha512 or manifest["sha512"])
         package = os.path.join(work, manifest["name"])
+        size = manifest.get("size_bytes")
+        ensure_space(work, size if isinstance(size, int) and 0 < size <= MAX_PACKAGE_SIZE else MAX_PACKAGE_SIZE)
         with open(package, "xb") as f:
             fetch(f"{RELEASES}/download/{version}/{manifest['name']}", f, MAX_PACKAGE_SIZE)
 
@@ -435,6 +464,7 @@ def run_locked(args, work: str) -> str:
     print(f"sha512 verified for {version}")
 
     source_dir = extract(package, version, work)
+    os.remove(package)  # not needed any more; frees its space before anything is stopped
     if args.dry_run:
         print("Dry run: package is valid, nothing installed")
         return version

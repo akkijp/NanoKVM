@@ -292,11 +292,39 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual(self.calls(), "")
 
     def test_driver_reboot_is_not_reported_as_failure(self):
+        class Rebooted(Exception):
+            pass
+
+        def killed_by_reboot(seconds):
+            raise Rebooted()
+
         self.u.migration_reboots = lambda: True
         self.u.started = lambda: False  # the daemons never come up in this boot
+        self.u.time = types.SimpleNamespace(sleep=killed_by_reboot, monotonic=__import__("time").monotonic)
         path, digest = self.package("2.5.4.1")
-        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
+        with self.assertRaises(Rebooted):
+            self.run_update(file=path, sha512=digest)
         self.assertIn("restart", self.calls())
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+
+    def test_driver_reboot_that_fails_first_is_reported(self):
+        self.u.migration_reboots = lambda: True
+        path, digest = self.package("2.5.4.1", self.entries("2.5.4.1", init=FAIL_SCRIPT))
+        with self.assertRaisesRegex(self.u.UpdateError, "failed before rebooting"):
+            self.run_update(file=path, sha512=digest)
+
+    def test_driver_reboot_that_never_happens_is_reported(self):
+        self.u.migration_reboots = lambda: True
+        self.u.started = lambda: False
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "neither rebooted nor started"):
+            self.run_update(file=path, sha512=digest)
+
+    def test_not_enough_space_is_refused_before_stop(self):
+        self.u.MIN_FREE_RESERVE = 1 << 62
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("not enough space", file=path, sha512=digest)
+        self.assertEqual(self.calls(), "")
 
     def test_migration_reboot_detection_matches_kvm_system(self):
         import hashlib
@@ -346,6 +374,20 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest, dry_run=True)
         self.assertFalse(stale.exists())
+
+    # --- release check ----------------------------------------------------------
+
+    def test_release_layout_check_matches_the_device(self):
+        checker = SCRIPT.parents[2] / "scripts/verify-package-layout.py"
+        good, _ = self.package("2.5.4.1")
+        result = subprocess.run(["python3", str(checker), good], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.base / "bad").mkdir()
+        bad, _ = self.package("2.5.4.1", self.entries("2.5.4.1", skip=("kvm_new_app",)),
+                              name="bad/nanokvm_2.5.4.1.tar.gz")
+        result = subprocess.run(["python3", str(checker), bad], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("kvm_new_app", result.stderr)
 
     # --- picoclaw init script -------------------------------------------------
 

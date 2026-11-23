@@ -36,8 +36,12 @@ if [ -n "$EXPECTED_SHA" ] && [ "$SOURCE_SHA" != "$EXPECTED_SHA" ]; then
 fi
 
 BRANCH="akki/${TAG%.*}"
-git fetch --no-tags origin "refs/heads/$BRANCH"
-if ! git merge-base --is-ancestor "$SOURCE_SHA" FETCH_HEAD; then
+# Fetch into a ref of this run only; FETCH_HEAD is shared with any other fetch.
+VERIFY_REF="refs/fork-verify/$$-$RANDOM"
+trap 'git update-ref -d "$VERIFY_REF" 2>/dev/null || true' EXIT
+git fetch -q --no-tags origin "+refs/heads/$BRANCH:$VERIFY_REF"
+BRANCH_SHA="$(git rev-parse --verify "$VERIFY_REF^{commit}")"
+if ! git merge-base --is-ancestor "$SOURCE_SHA" "$BRANCH_SHA"; then
     echo "[ERROR] tag '$TAG' points to a commit outside origin/$BRANCH" >&2
     exit 1
 fi

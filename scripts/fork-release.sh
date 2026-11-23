@@ -24,6 +24,13 @@ fi
 
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 OUT="$HOME/releases/$VERSION"
+mkdir -p "$HOME/releases"
+# One build per version at a time.
+exec 8>"$HOME/releases/.lock-$VERSION"
+if ! flock -n 8; then
+    echo "[ERROR] another release build of $VERSION is running" >&2
+    exit 1
+fi
 if [ -e "$OUT" ]; then
     echo "[ERROR] $OUT already exists; move it away first" >&2
     exit 1
@@ -55,8 +62,11 @@ if [ "$(git rev-parse HEAD)" != "$SHA" ] || [ -n "$(git status --porcelain --unt
 fi
 (cd "$REPO" && scripts/verify-release-tag.sh "$VERSION" "$SHA" > /dev/null)
 
-mkdir -p "$OUT"
-cp build/release/"nanokvm_$VERSION.tar.gz" build/release/latest.json build/release/sha256.txt "$OUT/"
-echo "$SHA" > "$OUT/SOURCE_COMMIT"
+# Assemble next to the destination, then put the complete set in place with one rename.
+STAGE="$(mktemp -d "$HOME/releases/.stage-$VERSION-XXXXXX")"
+cp build/release/"nanokvm_$VERSION.tar.gz" build/release/latest.json build/release/sha256.txt "$STAGE/"
+echo "$SHA" > "$STAGE/SOURCE_COMMIT"
+scripts/verify-release-assets.sh "$STAGE" "$VERSION"
+mv -T "$STAGE" "$OUT"
 echo "== DONE $VERSION from $SHA (not published): $OUT"
 ls -la "$OUT"

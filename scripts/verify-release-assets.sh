@@ -154,4 +154,9 @@ if [ "$MANIFEST_SHA512" != "$ACTUAL_SHA512" ]; then
     exit 1
 fi
 
+# akkijp fork: the same layout check the device runs before installing.
+if ! python3 "$(dirname "$0")/verify-package-layout.py" "$TARBALL"; then
+    exit 1
+fi
+
 echo "[OK] verified NanoKVM release assets for $VERSION"
