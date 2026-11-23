@@ -12,6 +12,9 @@ type GetVersionRsp struct {
 	Microphone string `json:"microphone,omitempty"`
 	// akkijp fork: set when the latest version could not be fetched (the rest is still valid).
 	LatestError string `json:"latestError,omitempty"`
+	// akkijp fork: when this server process started (ms since the epoch). A page watching an
+	// update sees it change when the restart has really happened.
+	ServerStarted int64 `json:"serverStarted,omitempty"`
 }
 
 type GetPreviewRsp struct {

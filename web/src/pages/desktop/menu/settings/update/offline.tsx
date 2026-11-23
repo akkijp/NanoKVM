@@ -13,6 +13,8 @@ interface UpdateProps {
   setErrMsg: (msg: string) => void;
   // akkijp fork: called once the package is accepted; the parent watches the restart.
   onInstalled: (version: string) => void;
+  // akkijp fork: an upload that was refused or failed; the parent shows what the device is left with.
+  onFailed: (message: string) => void;
 }
 
 // nanokvm_2.5.4.2.tar.gz -> 2.5.4.2 (the name was validated before the upload)
@@ -20,7 +22,7 @@ function versionOf(filename: string) {
   return filename.replace(/^nanokvm_/, '').replace(/\.tar\.gz$/, '');
 }
 
-export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled }: UpdateProps) => {
+export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled, onFailed }: UpdateProps) => {
   const { t } = useTranslation();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -77,11 +79,8 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
     api
       .offlineUpdate(formData, checksum)
       .then(async (rsp: Response) => {
-        // The proxy may return 502 after the update stops the old server.
-        if (rsp.status === 502) {
-          onInstalled(versionOf(file.name));
-          return;
-        }
+        // The proxy may return 502 after the update stops the old server: find out by watching.
+        if (rsp.status === 502) return;
         if (!rsp.ok) throw new Error(`HTTP error ${rsp.status}`);
 
         const rspj = await rsp.json();
@@ -97,11 +96,7 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
         onInstalled(versionOf(file.name));
       })
       .catch((error: unknown) => {
-        setIsLocked(false);
-        setStatus('failed');
-        setErrMsg(
-          error instanceof Error ? error.message : t('settings.update.offline.updateFailed')
-        );
+        onFailed(error instanceof Error ? error.message : t('settings.update.offline.updateFailed'));
       });
   }
 

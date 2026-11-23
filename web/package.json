@@ -12,7 +12,7 @@
     "dev": "vite",
     "mocked": "vite --mode mocked",
     "build": "tsc && vite build",
-    "test": "node --experimental-strip-types --test src/lib/version.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/version.test.ts src/lib/update-watch.test.ts",
     "lint": "eslint . --report-unused-disable-directives",
     "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,json,css,scss,md}\"",
     "preview": "vite preview"

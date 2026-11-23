@@ -853,17 +853,29 @@ func TestUpdateInstallsOnlyTheVersionTheUserSaw(t *testing.T) {
 func TestUpdateRefusesABodyItCannotRead(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	usePendingTestPaths(t)
-	for _, body := range []string{`{"version":"2.5.4.`, `{}`, `{"version":""}`, `{"version":"latest"}`, `garbage`} {
+	for _, body := range []string{`{"version":"2.5.4.`, `{}`, `{"version":""}`, `{"version":"latest"}`, `garbage`,
+		"   ", strings.Repeat(" ", 4096) + `{"version":"2.5.4.2"}`} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", strings.NewReader(body))
 		c.Request.Header.Set("Content-Type", "application/json")
 		(&Service{}).Update(c)
-		if !strings.Contains(w.Body.String(), "a version is required") {
+		if !strings.Contains(w.Body.String(), "invalid update request") {
 			t.Fatalf("body %q: %s", body, w.Body.String())
 		}
 		if !lockIsFree() {
 			t.Fatalf("body %q: the lock was not released", body)
 		}
+	}
+}
+
+func TestVersionReportsWhenThisServerStarted(t *testing.T) {
+	usePendingTestPaths(t)
+	oldBase := updateBaseURL
+	updateBaseURL = "http://127.0.0.1:1/unreachable"
+	t.Cleanup(func() { updateBaseURL = oldBase })
+	body := call((*Service).GetVersion, http.MethodGet, "/api/application/version")
+	if !strings.Contains(body, fmt.Sprintf(`"serverStarted":%d`, processStart.UnixMilli())) {
+		t.Fatalf("version: %s", body)
 	}
 }

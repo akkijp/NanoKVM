@@ -7,6 +7,7 @@ import * as api from '@/api/application.ts';
 
 import { Offline } from './offline.tsx';
 import { versionStatus } from '@/lib/version.ts';
+import { watchFinished } from '@/lib/update-watch.ts';
 
 type UpdateProps = {
   setIsLocked: (isClosable: boolean) => void;
@@ -28,6 +29,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const reloadWhenSettledRef = useRef(false);
   // The version the watched update or restart should bring up; reload only once it runs.
   const watchTargetRef = useRef('');
+  // Proof that the watched update did something: the server restarted, or a pending record was
+  // seen. Without it a reinstall of the running version could look finished before it started.
+  const serverStartedRef = useRef(0);
+  const watchStartedFromRef = useRef(0);
+  const watchSawPendingRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -62,12 +68,19 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
         // the restart; if it stopped half-way, only manual recovery is safe.
         setMicrophone(rsp.data.microphone || '');
+        if (rsp.data.serverStarted) serverStartedRef.current = rsp.data.serverStarted;
 
         // Watching our own update or restart retry.
         if (reloadWhenSettledRef.current) {
           const pending = rsp.data.restartPending;
-          if (!pending && (!watchTargetRef.current || rsp.data.current === watchTargetRef.current)) {
-            window.location.reload(); // the target version runs and has settled
+          if (pending) watchSawPendingRef.current = true;
+          const state = {
+            target: watchTargetRef.current,
+            startedFrom: watchStartedFromRef.current,
+            sawPending: watchSawPendingRef.current
+          };
+          if (watchFinished(state, rsp.data)) {
+            window.location.reload(); // the target version runs, after a real restart, and has settled
             return;
           }
           if (pending && (rsp.data.restartPhase === 'switching' || rsp.data.restartPhase === 'installed')) {
@@ -139,6 +152,32 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       });
   }
 
+  // An install failed. It may have left a record (switching: recovery; installed: retry the
+  // restart); show that instead of a bare error, which would offer an upload the server refuses.
+  function showFailure(message: string) {
+    setIsLocked(false);
+    api
+      .getVersion()
+      .then((rsp: any) => {
+        if (!mountedRef.current) return;
+        const data = rsp?.data;
+        if (rsp?.code === 0 && data?.restartPending) {
+          setCurrentVersion(data.current);
+          setLatestVersion(data.pendingVersion || '');
+          setStatus(data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
+          setErrMsg(message);
+          return;
+        }
+        setStatus('failed');
+        setErrMsg(message);
+      })
+      .catch(() => {
+        if (!mountedRef.current) return;
+        setStatus('failed');
+        setErrMsg(message);
+      });
+  }
+
   function stopWatching(message: string) {
     watchUntilRef.current = 0;
     reloadWhenSettledRef.current = false;
@@ -194,6 +233,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     // A reply that arrives after the tab was closed must not lock the settings again.
     if (!mountedRef.current) return;
     watchTargetRef.current = target;
+    watchStartedFromRef.current = serverStartedRef.current;
+    watchSawPendingRef.current = false;
     setIsLocked(true);
     setStatus('updating');
     setErrMsg('');
@@ -218,9 +259,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           return;
         }
         if (rsp.code !== 0) {
-          setIsLocked(false);
-          setStatus('failed');
-          setErrMsg(rsp.msg || t('settings.update.updateFailed'));
+          showFailure(rsp.msg || t('settings.update.updateFailed'));
           return;
         }
         watchRestart(latestVersion);
@@ -256,6 +295,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             setIsLocked={setIsLocked}
             setErrMsg={setErrMsg}
             onInstalled={watchRestart}
+            onFailed={showFailure}
           />
           <Divider className="opacity-50" />
         </>

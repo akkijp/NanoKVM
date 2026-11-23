@@ -1050,8 +1050,15 @@ class UpdateScriptTest(unittest.TestCase):
     def test_kvm_system_refuses_to_migrate_over_an_unfinished_update(self):
         source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()
         body = source[source.index("AppInitResult new_app_init(void)"):]
-        # The check comes before the first write.
-        self.assertLess(body.index("update_switch_unfinished()"), body.index("init_command("))
+        body = body[body.index("{") + 1:]
+        # The guard is the very first statement: nothing (system(), init_command(), file writes)
+        # can run before it.
+        first_statement = body.strip().split("\n", 1)[0].strip()
+        self.assertEqual(first_statement, "if(update_switch_unfinished()){")
+        guard = body.index("update_switch_unfinished()")
+        for effect in ("system(", "init_command(", "fopen(", "unlink(", "write_hdmi_state("):
+            if effect in body:
+                self.assertLess(guard, body.index(effect), effect)
         self.assertIn('fopen("/etc/kvm/update-restart-pending", "r")', source)
 
     def test_kvm_system_record_parser(self):

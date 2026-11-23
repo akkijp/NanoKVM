@@ -1,7 +1,6 @@
 package application
 
 import (
-	"bytes"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
@@ -82,16 +81,21 @@ func restartServices() {
 
 var errLatestChanged = errors.New("the latest version changed")
 
+const maxUpdateRequest = 4096
+
 // requestedVersion reads the version the page asks for. Only an empty body (an older page) means
 // "whatever is latest"; a body that cannot be parsed, or lacks a valid version, is refused before
 // anything is downloaded, so a truncated request never installs a version nobody saw.
 func requestedVersion(c *gin.Context) (string, error) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 4096))
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxUpdateRequest+1))
 	if err != nil {
 		return "", fmt.Errorf("invalid update request: %w", err)
 	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return "", nil
+	if len(body) > maxUpdateRequest {
+		return "", errors.New("invalid update request: too large")
+	}
+	if len(body) == 0 {
+		return "", nil // an older page: no body at all
 	}
 	var req struct {
 		Version *string `json:"version"`

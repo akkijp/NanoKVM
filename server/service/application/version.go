@@ -64,7 +64,8 @@ func (s *Service) GetVersion(c *gin.Context) {
 	microphone := readMicrophoneStatus()
 	if record, pending := readPending(); pending {
 		rsp.OkRspWithData(c, &proto.GetVersionRsp{
-			Current: currentVersion, RestartPending: true, RestartPhase: reportedPhase(record),
+			ServerStarted: processStart.UnixMilli(),
+			Current:       currentVersion, RestartPending: true, RestartPhase: reportedPhase(record),
 			PendingVersion: record.To, Microphone: microphone,
 		})
 		return
@@ -78,16 +79,18 @@ func (s *Service) GetVersion(c *gin.Context) {
 		// akkijp fork: still report the local state (a microphone that could not be disabled must
 		// be visible on a KVM that has no internet access).
 		rsp.OkRspWithData(c, &proto.GetVersionRsp{
-			Current: currentVersion, Microphone: microphone, LatestError: "failed to query latest version",
+			ServerStarted: processStart.UnixMilli(),
+			Current:       currentVersion, Microphone: microphone, LatestError: "failed to query latest version",
 		})
 		return
 	}
 	latestVersion = latest.Version
 
 	rsp.OkRspWithData(c, &proto.GetVersionRsp{
-		Current:    currentVersion,
-		Latest:     latestVersion,
-		Microphone: microphone,
+		ServerStarted: processStart.UnixMilli(),
+		Current:       currentVersion,
+		Latest:        latestVersion,
+		Microphone:    microphone,
 	})
 }
 
