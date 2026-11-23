@@ -43,9 +43,12 @@ git -C "$REPO" fetch -q --no-tags origin "$SHA"
 
 TREE="$(mktemp -d)/NanoKVM"
 cleanup() {
+    local status=$?
+    set +e
     [ -n "${IMAGE:-}" ] && docker image rm -f "$IMAGE" >/dev/null 2>&1
-    git -C "$REPO" worktree remove --force "$TREE" 2>/dev/null || true
+    git -C "$REPO" worktree remove --force "$TREE" >/dev/null 2>&1
     rm -rf "$(dirname "$TREE")"
+    exit "$status"
 }
 trap cleanup EXIT
 git -C "$REPO" worktree add -q --detach "$TREE" "$SHA"

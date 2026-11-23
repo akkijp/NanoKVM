@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pathlib
+import sys
 import shutil
 import subprocess
 import tarfile
@@ -16,6 +17,8 @@ import types
 import unittest
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "kvmapp/system/update-nanokvm.py"
+# Loading the updater must not write kvmapp/system/__pycache__ (package.sh ships kvmapp/).
+sys.dont_write_bytecode = True
 OK_SCRIPT = b"#!/bin/sh\necho \"$0 $1\" >> \"$(dirname \"$0\")/../../../calls.log\"\nexit 0\n"
 FAIL_SCRIPT = b"#!/bin/sh\nexit 1\n"
 
@@ -40,7 +43,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u = load()
         self.u.APP_DIR = str(self.base / "root/kvmapp")
         self.u.BACKUP_DIR = str(self.base / "root/old")
-        self.u.WORK_PARENT = str(self.base / "root")
+        self.u.WORK_PARENT = str(self.base / "root/.kvm-update")
         self.u.LOCK_FILE = str(self.base / "update.lock")
         etc = self.base / "etc"
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
@@ -48,7 +51,9 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
+        self.real_migration_reboots = self.u.migration_reboots
         self.u.migration_reboots = lambda: False
+        self.u.check_same_filesystem = lambda: None
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
         app = pathlib.Path(self.u.APP_DIR)
         app.mkdir(parents=True)
@@ -76,6 +81,7 @@ class UpdateScriptTest(unittest.TestCase):
         if entries is None:
             entries = self.entries(version)
         path = self.base / (name or f"nanokvm_{version}.tar.gz")
+        path.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(path, "w:gz") as tar:
             for member_name, data in entries:
                 info = tarfile.TarInfo(member_name)
@@ -109,8 +115,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_unchanged()
 
     def assert_no_work_dirs(self):
-        leftovers = [p for p in os.listdir(self.u.WORK_PARENT) if p.startswith(".kvm-update-")]
-        self.assertEqual(leftovers, [])
+        self.assertEqual(os.listdir(self.u.WORK_PARENT), [])
 
     # --- local file -----------------------------------------------------------
 
@@ -374,8 +379,21 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertFalse(u.migration_reboots())  # legacy driver is fine without hdmi_version
         hdmi.write_text("u")
         self.assertTrue(u.migration_reboots())  # but not for HDMI version 2
+        hdmi.write_text("")
+        with self.assertRaisesRegex(u.UpdateError, "is empty"):
+            u.migration_reboots()  # new_app_init fails on an empty hdmi_version
+        hdmi.unlink()
         driver.unlink()
-        self.assertTrue(u.migration_reboots())
+        with self.assertRaisesRegex(u.UpdateError, "cannot read"):
+            u.migration_reboots()  # new_app_init fails when md5sum of the driver fails
+
+    def test_missing_driver_is_refused_before_stop(self):
+        self.u.migration_reboots = self.real_migration_reboots
+        self.u.DRIVER = str(self.base / "missing.ko")
+        self.u.HDMI_VERSION = str(self.base / "no-hdmi-version")
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("first start would fail", file=path, sha512=digest)
+        self.assertEqual(self.calls(), "")
 
     def test_new_version_that_does_not_stay_up_is_reported(self):
         self.u.started = lambda: False
@@ -401,11 +419,31 @@ class UpdateScriptTest(unittest.TestCase):
             self.assert_rejected("already running", file=path, sha512=digest, dry_run=True)
 
     def test_leftover_work_dirs_are_removed(self):
-        stale = pathlib.Path(self.u.WORK_PARENT) / ".kvm-update-stale"
-        stale.mkdir()
+        stale = pathlib.Path(self.u.WORK_PARENT) / "run-stale"
+        stale.mkdir(parents=True)
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest, dry_run=True)
         self.assertFalse(stale.exists())
+
+    def test_cleanup_leaves_other_files_in_root_alone(self):
+        kept = pathlib.Path(self.u.WORK_PARENT).parent / ".kvm-update-backup"
+        kept.mkdir()
+        path, digest = self.package("2.5.4.1", name=".kvm-update-backup/nanokvm_2.5.4.1.tar.gz")
+        self.run_update(file=path, sha512=digest, dry_run=True)
+        self.assertTrue(pathlib.Path(path).exists())
+
+    def test_backup_on_other_filesystem_is_refused_before_stop(self):
+        u = load()
+        u.APP_DIR, u.BACKUP_DIR, u.STAGE_DIR = self.u.APP_DIR, "/dev/shm/old", self.u.STAGE_DIR
+        if not os.path.isdir("/dev/shm") or os.stat("/dev/shm").st_dev == os.stat(self.u.APP_DIR).st_dev:
+            self.skipTest("needs /dev/shm on its own filesystem")
+        with self.assertRaisesRegex(u.UpdateError, "same filesystem"):
+            u.check_same_filesystem()
+
+    def test_same_filesystem_passes(self):
+        u = load()
+        u.APP_DIR, u.BACKUP_DIR, u.STAGE_DIR = self.u.APP_DIR, self.u.BACKUP_DIR, self.u.STAGE_DIR
+        u.check_same_filesystem()
 
     # --- release check ----------------------------------------------------------
 
@@ -420,7 +458,19 @@ class UpdateScriptTest(unittest.TestCase):
         result = subprocess.run(["python3", str(checker), bad], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("kvm_new_app", result.stderr)
-        self.assertFalse((SCRIPT.parent / "__pycache__").exists(), "the check left bytecode in kvmapp/")
+
+    def test_release_layout_check_writes_no_bytecode(self):
+        # A writable copy without any cache, so a regression would show up here.
+        copy = self.base / "repo"
+        (copy / "scripts").mkdir(parents=True)
+        (copy / "kvmapp/system").mkdir(parents=True)
+        shutil.copy(SCRIPT.parents[2] / "scripts/verify-package-layout.py", copy / "scripts")
+        shutil.copy(SCRIPT, copy / "kvmapp/system")
+        good, _ = self.package("2.5.4.1")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+        subprocess.run(["python3", str(copy / "scripts/verify-package-layout.py"), good], env=env, check=True,
+                       capture_output=True)
+        self.assertEqual(list(copy.rglob("__pycache__")), [])
 
     # --- picoclaw init script -------------------------------------------------
 

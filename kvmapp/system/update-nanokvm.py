@@ -49,7 +49,9 @@ import urllib.request
 RELEASES = "https://github.com/akkijp/NanoKVM/releases"
 APP_DIR = "/kvmapp"
 BACKUP_DIR = "/root/old"
-WORK_PARENT = "/root"
+# Work directories live only under this directory, so cleaning up leftovers never touches
+# anything else in /root.
+WORK_PARENT = "/root/.kvm-update"
 LOCK_FILE = "/run/nanokvm-update.lock"
 # The installed init script stops the running app. The new app is started with
 # its own script, so its first start already runs the fork's boot steps.
@@ -302,19 +304,24 @@ def stopped() -> bool:
 
 
 def migration_reboots() -> bool:
-    """Whether the new version's first start will replace the HDMI driver and reboot."""
+    """Whether the new version's first start will replace the HDMI driver and reboot.
+    Raises when that first start would fail on this device (new_app_init returns
+    APP_INIT_FAILED), so nothing is stopped for an update that cannot start."""
     try:
         with open(DRIVER, "rb") as f:
             digest = hashlib.md5(f.read()).hexdigest()
-    except OSError:
-        return True
+    except OSError as e:
+        raise UpdateError(f"the new version's first start would fail: cannot read {DRIVER} ({e})")
     hdmi = -1
-    try:
-        with open(HDMI_VERSION, "rb") as f:
-            first = f.read(1)
+    if os.path.exists(HDMI_VERSION):
+        try:
+            with open(HDMI_VERSION, "rb") as f:
+                first = f.read(1)
+        except OSError as e:
+            raise UpdateError(f"the new version's first start would fail: cannot read {HDMI_VERSION} ({e})")
+        if not first:
+            raise UpdateError(f"the new version's first start would fail: {HDMI_VERSION} is empty")
         hdmi = {b"c": 1, b"u": 2, b"d": 2}.get(first, -1)
-    except OSError:
-        pass
     current = digest == CURRENT_DRIVER_MD5 or (hdmi != 2 and digest == LEGACY_DRIVER_MD5)
     return not current
 
@@ -371,8 +378,18 @@ def switch() -> None:
         raise
 
 
+def check_same_filesystem() -> None:
+    """The switch renames /kvmapp to /root/old and /kvmapp.new to /kvmapp; renames do not
+    cross filesystems. The web updater refuses this layout too (ensureInstallFilesystem)."""
+    app = os.stat(APP_DIR).st_dev
+    for path in (os.path.dirname(BACKUP_DIR), os.path.dirname(STAGE_DIR)):
+        if os.stat(path).st_dev != app:
+            raise UpdateError(f"{path} is not on the same filesystem as {APP_DIR}; nothing was changed")
+
+
 def install(source_dir: str, version: str) -> None:
     check_not_interrupted()
+    check_same_filesystem()
     reboots = migration_reboots()
     prepare(source_dir)
     if os.path.exists(STAGE_DIR):
@@ -432,10 +449,11 @@ def acquire_lock():
 def run(args) -> str:
     lock = acquire_lock()
     # An interrupted earlier run can leave its work directory behind.
+    os.makedirs(WORK_PARENT, 0o700, exist_ok=True)
     for name in os.listdir(WORK_PARENT):
-        if name.startswith(".kvm-update-"):
+        if name.startswith("run-"):
             shutil.rmtree(os.path.join(WORK_PARENT, name), ignore_errors=True)
-    work = tempfile.mkdtemp(prefix=".kvm-update-", dir=WORK_PARENT)
+    work = tempfile.mkdtemp(prefix="run-", dir=WORK_PARENT)
     try:
         return run_locked(args, work)
     finally:
