@@ -589,3 +589,40 @@ func TestVersionPartsAreOneToNineDigits(t *testing.T) {
 		t.Fatal("a 10-digit part must be rejected")
 	}
 }
+
+func TestWriteBackErrorKeepsSwitching(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldFsync := restartPendingPath, installAppDir, installBackupDir, fsyncPath
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, fsyncPath = oldPending, oldApp, oldBackup, oldFsync
+	})
+	for _, d := range []string{installAppDir, filepath.Join(dir, "new", "server")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"):               "2.5.4.1\n",
+		filepath.Join(dir, "new", "version"):                  "2.5.4.2\n",
+		filepath.Join(dir, "new", "server", "NanoKVM-Server"): "new",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The write-back of one new file fails (an I/O error reported by fsync).
+	fsyncPath = func(path string) error {
+		if strings.HasSuffix(path, "NanoKVM-Server") {
+			return fmt.Errorf("input/output error")
+		}
+		return oldFsync(path)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "input/output error") {
+		t.Fatalf("install with a write-back error: %v", err)
+	}
+	if record, _ := readPending(); record.Phase != phaseSwitching {
+		t.Fatalf("record after a write-back error: %+v", record)
+	}
+}

@@ -488,7 +488,7 @@ def check_not_interrupted() -> None:
         # failed restart) and /kvmapp is one of the two versions. In the "switching" phase,
         # also nothing may have been moved to /root/old yet (the web updater moves file by file).
         settled = (whole and current and current in (record.get("from"), record.get("to"))
-                   and daemons_run_app(os.stat(RESTART_PENDING).st_mtime)
+                   and daemons_run_app(record["_mtime"])
                    and (record.get("phase") == "installed" or only_dirs(BACKUP_DIR)))
         if settled:
             say(f"{current} is running from {APP_DIR}; clearing the record of the earlier update")
@@ -614,21 +614,43 @@ def daemons_run_app(since: float) -> bool:
 
 
 def read_pending():
-    """The record, or None. An unreadable record counts as phase "switching" (state unknown)."""
+    """The record, or None. An unreadable record counts as phase "switching" (state unknown).
+    Its time ("_mtime") comes from the same open file, so a record removed meanwhile (by
+    S95nanokvm's check) is simply not there, instead of failing a second lookup."""
     try:
         with open(RESTART_PENDING) as f:
+            mtime = os.fstat(f.fileno()).st_mtime
             data = f.read()
     except FileNotFoundError:
         return None
     except OSError:
-        return {"phase": "switching"}
+        return {"phase": "switching", "_mtime": 0.0}
     try:
         record = json.loads(data)
     except ValueError:
-        return {"phase": "switching"}
+        return {"phase": "switching", "_mtime": mtime}
     if not isinstance(record, dict) or record.get("phase") != "installed":
         record = {**(record if isinstance(record, dict) else {}), "phase": "switching"}
+    record["_mtime"] = mtime
     return record
+
+
+def fsync_path(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_tree(root_dir: str) -> None:
+    """fsync every file and directory under root_dir; raises on the first write-back error."""
+    for current, dirs, files in os.walk(root_dir):
+        for name in files:
+            path = os.path.join(current, name)
+            if not os.path.islink(path):
+                fsync_path(path)
+        fsync_path(current)
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -678,13 +700,16 @@ def clear_restart_pending() -> None:
 
 
 def backup_trash() -> str:
-    return BACKUP_DIR + ".removing"
+    # Under the updater's own directory (same filesystem as /root/old, so the rename is atomic);
+    # only this script puts anything there, and inputs from it are refused.
+    return os.path.join(WORK_PARENT, "old.removing")
 
 
 def remove_previous_backup() -> None:
     """Rename /root/old away (atomic) before deleting it, so a deletion cut short never leaves a
     half-deleted /root/old that looks like a half-moved backup. A leftover is finished next time."""
     trash = backup_trash()
+    os.makedirs(WORK_PARENT, 0o700, exist_ok=True)
     if os.path.lexists(BACKUP_DIR):
         if os.path.lexists(trash):
             shutil.rmtree(trash)
@@ -841,8 +866,17 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     remove_stage_mark()
     # The new files, their permissions and the renamed directories reach the disk before the
     # record says "installed": a power cut in between must leave "switching", never an
-    # "installed" record over files that were not written yet.
-    os.sync()
+    # "installed" record over files that were not written yet. fsync (unlike sync) reports
+    # write-back errors.
+    try:
+        fsync_tree(APP_DIR)
+        for directory in {os.path.dirname(APP_DIR), os.path.dirname(BACKUP_DIR)}:
+            fsync_path(directory)
+    except OSError as e:
+        raise UpdateError(
+            f"{version} was put in place, but writing it to the card failed ({e}). It is left marked as "
+            f"unfinished ({RESTART_PENDING}), so it will not be started; recover as described in FORK.md"
+        )
     try:
         set_restart_pending("installed", previous, version)  # complete; only the restart is missing
     except OSError as e:

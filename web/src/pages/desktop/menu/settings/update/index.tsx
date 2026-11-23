@@ -47,6 +47,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       .then((rsp: any) => {
         if (requestId !== versionRequestRef.current || !mountedRef.current) return;
         if (rsp.code !== 0 || !rsp.data) {
+          watchUntilRef.current = 0;
+          reloadWhenSettledRef.current = false;
+          setIsLocked(false);
           setStatus('failed');
           setErrMsg(t('settings.update.queryFailed'));
           return;
@@ -106,6 +109,10 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           scheduleRecheck(); // probably the restart: keep the current view and ask again
           return;
         }
+        // Gave up watching: let the user close the settings or try again.
+        watchUntilRef.current = 0;
+        reloadWhenSettledRef.current = false;
+        setIsLocked(false);
         setStatus('failed');
         setErrMsg(t('settings.update.queryFailed'));
       });

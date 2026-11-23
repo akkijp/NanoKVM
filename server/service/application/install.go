@@ -3,7 +3,6 @@ package application
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -111,10 +110,49 @@ func installPreparedPackage(sourceDir string) error {
 	return nil
 }
 
-// syncFilesystems flushes everything to disk (sync(1), present on the device via busybox).
-// A variable so tests can see the order and make it fail.
+// syncFilesystems makes the switched app durable and reports write-back errors: every file and
+// directory under /kvmapp is fsync'ed (fsync returns the I/O errors that sync(1) cannot), then
+// the parents of /kvmapp and /root/old, whose entries the switch changed. A variable so tests can
+// see the order and make it fail.
 var syncFilesystems = func() error {
-	return exec.Command("sync").Run()
+	if err := fsyncTree(installAppDir); err != nil {
+		return err
+	}
+	for _, dir := range []string{filepath.Dir(installAppDir), filepath.Dir(installBackupDir)} {
+		if err := syncDir(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fsyncPath opens one file or directory and fsyncs it. A variable so tests can make it fail.
+var fsyncPath = func(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func fsyncTree(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if err := fsyncPath(path); err != nil {
+			return fmt.Errorf("fsync %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 // listFiles lists the regular files under dir, relative to it.

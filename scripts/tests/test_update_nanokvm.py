@@ -595,15 +595,51 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_files_reach_the_disk_before_installed_is_recorded(self):
         order = []
-        real_sync, real_set = os.sync, self.u.set_restart_pending
-        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
-        self.u.os.path = os.path
-        self.u.os.sync = lambda: (order.append("sync"), real_sync())[1]
+        real_tree, real_set = self.u.fsync_tree, self.u.set_restart_pending
+        self.u.fsync_tree = lambda path: (order.append("sync"), real_tree(path))[1]
         self.u.set_restart_pending = lambda phase, a, b: (order.append(phase), real_set(phase, a, b))[1]
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
         self.assertLess(order.index("switching"), order.index("sync"))
         self.assertLess(order.index("sync"), order.index("installed"))
+
+    def test_write_back_error_keeps_switching_and_does_not_start(self):
+        real_fsync_path = self.u.fsync_path
+
+        def fsync_path(path):
+            if path.endswith("NanoKVM-Server"):
+                raise OSError(5, "Input/output error")
+            real_fsync_path(path)
+
+        self.u.fsync_path = fsync_path
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "writing it to the card failed"):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual(json.loads(pathlib.Path(self.u.RESTART_PENDING).read_text())["phase"], "switching")
+        self.assertFalse(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
+
+    def test_trash_lives_in_the_updater_area_and_inputs_there_are_refused(self):
+        self.assertTrue(self.u.backup_trash().startswith(self.u.WORK_PARENT + os.sep))
+        trash = pathlib.Path(self.u.backup_trash())
+        trash.mkdir(parents=True)
+        path, digest = self.package("2.5.4.1", name="root/.kvm-update/old.removing/nanokvm_2.5.4.1.tar.gz")
+        self.assert_rejected("copy it elsewhere", file=path, sha512=digest)
+        self.assertTrue(pathlib.Path(path).exists())
+
+    def test_record_removed_while_it_is_checked_is_not_an_error(self):
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "installed"}\n')
+        real_read = self.u.read_pending
+
+        def read_then_gone():
+            record = real_read()
+            if os.path.exists(self.u.RESTART_PENDING):
+                os.remove(self.u.RESTART_PENDING)  # S95's check finished meanwhile
+            return record
+
+        self.u.read_pending = read_then_gone
+        self.u.daemons_run_app = lambda since: True
+        path, digest = self.package("2.5.4.1")
+        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
 
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
@@ -630,7 +666,7 @@ class UpdateScriptTest(unittest.TestCase):
         state = {"cut": True}
 
         def rmtree(path, *a, **kw):
-            if state["cut"] and path.endswith(".removing"):
+            if state["cut"] and path == self.u.backup_trash():
                 state["cut"] = False
                 os.remove(os.path.join(path, "version"))  # part of it is gone, then power is lost
                 raise OSError("power lost")
@@ -645,7 +681,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertEqual(self.installed_version(), "2.4.3")
         # The next run finishes the removal and installs.
         self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
-        self.assertFalse(os.path.exists(self.u.BACKUP_DIR + ".removing"))
+        self.assertFalse(os.path.exists(self.u.backup_trash()))
 
     def test_short_writes_still_write_the_whole_record(self):
         real_write = os.write
@@ -686,7 +722,7 @@ class UpdateScriptTest(unittest.TestCase):
         real_rmtree = shutil.rmtree
 
         def rmtree(path, *a, **kw):
-            if path.startswith(self.u.BACKUP_DIR):
+            if path.startswith(self.u.BACKUP_DIR) or path == self.u.backup_trash():
                 raise OSError("I/O error")
             real_rmtree(path, *a, **kw)
 
@@ -836,7 +872,7 @@ class UpdateScriptTest(unittest.TestCase):
         real_rmtree = self.u.shutil.rmtree
 
         def rmtree(path, *a, **kw):
-            if path.startswith(self.u.BACKUP_DIR):  # /root/old is renamed to /root/old.removing first
+            if path.startswith(self.u.BACKUP_DIR) or path == self.u.backup_trash():  # renamed away first
                 raise OSError("read-only")
             real_rmtree(path, *a, **kw)
 
