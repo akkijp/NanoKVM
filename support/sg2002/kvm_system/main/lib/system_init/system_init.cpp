@@ -2,6 +2,8 @@
 #include "system_init.h"
 
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 using namespace maix;
@@ -96,8 +98,32 @@ static bool init_command(const char *command)
 	return false;
 }
 
+// akkijp fork: the record of an update not yet seen running (server/service/application/pending.go).
+// Anything but one complete line of JSON with "phase":"installed" means an update stopped while
+// replacing /kvmapp. An older init script (e.g. upstream) does not check it before running this
+// migration, so check here, before the first write to /etc.
+static bool update_switch_unfinished(void)
+{
+	FILE *fp = fopen("/etc/kvm/update-restart-pending", "r");
+	if(!fp) return errno != ENOENT;
+	char buf[512] = {};
+	size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+	bool more = fgetc(fp) != EOF;
+	fclose(fp);
+	if(more || n == 0) return true;
+	while(n > 0 && buf[n - 1] == '\n') buf[--n] = '\0';
+	if(strchr(buf, '\n') != NULL) return true;
+	if(buf[0] != '{' || buf[n - 1] != '}') return true;
+	return strstr(buf, "\"phase\":\"installed\"") == NULL && strstr(buf, "\"phase\": \"installed\"") == NULL;
+}
+
 AppInitResult new_app_init(void)
 {
+	if(update_switch_unfinished()){
+		fprintf(stderr, "[kvms] an earlier update stopped while replacing /kvmapp; not migrating (see FORK.md)\n");
+		return APP_INIT_FAILED;
+	}
+
 	// Update the necessary scripts
 	system("rm -f /boot/logo.jpeg");
 	if(!init_command("mkdir -p /etc/kvm /kvmapp/kvm")) return APP_INIT_FAILED;

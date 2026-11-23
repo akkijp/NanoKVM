@@ -64,7 +64,7 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 - 止めた後、2 つのデーモンが消えたことを確かめてから入れ替える。止められなければ何も変えずに終わる。入れ替えに失敗したら前の版を `/kvmapp` に戻して起動する
 - 新しい版のデーモンが動き続けなければ、失敗（終了コード 1）として知らせる。入れ替えに失敗して前の版も起動できなかったときも、そう知らせる
 - 新しい版の初回起動が HDMI のドライバーか起動台本（S95nanokvm）を入れ替えるときは、機器がそのまま再起動する（SSH は切れる）。上流の版からの最初の導入は起動台本が変わるので必ず再起動する（古い起動台本のまま新しい版を起動すると、マイクと picoclaw を切る処理が走らないため）。戻ってきたら `cat /kvmapp/version` と `pidof NanoKVM-Server && pidof kvm_system`（両方が動いていること）で確かめる
-- 前回の更新が入れ替えの途中で止まっていた（`/kvmapp` が欠けている・`/root/old` が途中まで）ときは何もしない。`/kvmapp` 自体が無く、`/root/old` に `version`・`server/NanoKVM-Server`・`kvm_system/kvm_system` が揃っているときに限り、`mv /root/old /kvmapp` で前の版を戻して再起動してよい。それ以外（`/kvmapp` が残っている・`/root/old` が途中まで）は、下の microSD の書き直しで戻す
+- 前回の更新が入れ替えの途中で止まっていた（`/kvmapp` が欠けている・`/root/old` が途中まで・記録が `switching`）ときは何もしない。下の「途中で止まったときの戻し方」で戻す
 - マイクを切れなかったときは、新しい版は動いたまま失敗（終了コード 1）として知らせる（`/run/nanokvm-microphone` に理由）
 
 ### 「まだ動いたと確かめていない」記録（`/etc/kvm/update-restart-pending`）
@@ -73,9 +73,23 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 
 - 新しい版の S95 は、2 つのデーモンが 15 秒動き続けたら記録を消す
 - `installed` のまま再起動に失敗したときは、画面の「再起動をやり直す」か `/kvmapp/system/init.d/S95nanokvm restart`
-- `switching` のまま止まったとき（入れ替えの途中で電源が落ちた等）や記録が読めないときは、S95 が KVM を起動しない（`/kvmapp` が新旧まじりかもしれず、新しい版の移行処理が `/etc` を書き換えてしまうため）。SSH は使えるので、下の microSD の書き直しで戻すか、`/kvmapp` と `/root/old` を確かめて手で戻したうえで記録を消す
+- `switching` のまま止まったとき（入れ替えの途中で電源が落ちた等）や記録が読めないときは、S95 も新しい版の移行処理（`kvm_system --migrate`）も KVM を起動しない（`/kvmapp` が新旧まじりかもしれず、移行処理が `/etc` を書き換えてしまうため）。下の「途中で止まったときの戻し方」で戻す
 - 前の版（`from`）か新しい版（`to`）が `/kvmapp` にそろって 2 つのデーモンが動いていれば、`update-nanokvm.py` が記録を消して先へ進む（上流の S95 で前の版が起動し直した場合など）
 
-自動では戻さない。戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。
+### 途中で止まったときの戻し方
+
+1. SSH で入る。SSH を切っている機器（`/etc/kvm/ssh_stop` がある）は、microSD のブート領域（FAT）に空のファイル `start_ssh_once` を置いて起動すると、その起動のときだけ SSH が有効になる
+2. `cat /etc/kvm/update-restart-pending` で `from`（前の版）を見る
+3. `/kvmapp` 自体が無く、`/root/old/version` が `from` と同じで、`/root/old/server/NanoKVM-Server` と `/root/old/kvm_system/kvm_system` があるときに限り、手で戻せる:
+
+   ```bash
+   mv /root/old /kvmapp
+   rm /etc/kvm/update-restart-pending
+   reboot
+   ```
+
+4. それ以外（`/kvmapp` が残っている＝画面の更新がファイル単位で動かしていた、`/root/old` が途中まで、版が合わない）は、microSD を書き直す
+
+自動では戻さない。全部を戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。
 
 2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`（フォークの Releases から取る）で入る。

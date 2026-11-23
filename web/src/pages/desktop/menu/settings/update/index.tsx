@@ -55,9 +55,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         setMicrophone(rsp.data.microphone || '');
         if (rsp.data.restartPending) {
           setLatestVersion(rsp.data.pendingVersion || '');
-          if (rsp.data.restartPhase === 'confirming') {
+          if (rsp.data.restartPhase === 'confirming' || rsp.data.restartPhase === 'updating') {
             // Restarted; the device is checking that both daemons stay up. Look again shortly.
-            setStatus('confirming');
+            setStatus(rsp.data.restartPhase === 'updating' ? 'updating' : 'confirming');
             if (mountedRef.current) {
               if (recheckTimerRef.current) clearTimeout(recheckTimerRef.current);
               recheckTimerRef.current = setTimeout(checkForUpdates, 5000);
@@ -167,7 +167,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       {/* akkijp fork: no preview channel and no custom update server; updates come only from the fork's releases. */}
       {/* akkijp fork: while an earlier update is unsettled the server refuses new installs; hide the
           offline upload so the retry button or recovery note stays on screen. */}
-      {!['restartPending', 'switchIncomplete', 'confirming'].includes(status) && (
+      {!['restartPending', 'switchIncomplete', 'confirming', 'updating'].includes(status) && (
         <>
           <Offline
             status={status}

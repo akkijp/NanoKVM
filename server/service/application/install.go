@@ -98,7 +98,10 @@ func installPreparedPackage(sourceDir string) error {
 	// The new files, their permissions and the directories reach the disk before the record says
 	// "installed": a power cut in between must leave "switching", never "installed" over files
 	// that were not written yet.
-	syncFilesystems()
+	if err := syncFilesystems(); err != nil {
+		// Not known to be on disk: stay "switching" (the next boot will not start from it).
+		return fmt.Errorf("sync the new version to disk: %w", err)
+	}
 
 	// Complete: only the restart is missing, which may now be retried.
 	record.Phase = phaseInstalled
@@ -109,11 +112,9 @@ func installPreparedPackage(sourceDir string) error {
 }
 
 // syncFilesystems flushes everything to disk (sync(1), present on the device via busybox).
-// A variable so tests can see the order.
-var syncFilesystems = func() {
-	if err := exec.Command("sync").Run(); err != nil {
-		log.Warnf("sync failed: %v", err)
-	}
+// A variable so tests can see the order and make it fail.
+var syncFilesystems = func() error {
+	return exec.Command("sync").Run()
 }
 
 // listFiles lists the regular files under dir, relative to it.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"NanoKVM-Server/proto"
@@ -45,11 +46,37 @@ const (
 	// Reported only: an installed update whose new server is running while S95nanokvm waits
 	// for both daemons to stay up before removing the record.
 	phaseConfirming = "confirming"
+	// Reported only: "switching" while an update holds the update lock.
+	phaseUpdating = "updating"
 )
+
+// updateInProgress reports whether an update (in this process, or update-nanokvm.py, which
+// shares the lock file) is running right now.
+func updateInProgress() bool {
+	mutex.Lock()
+	busy := isUpdating
+	mutex.Unlock()
+	if busy {
+		return true
+	}
+	file, err := os.OpenFile(updateLockPath, os.O_RDONLY, 0)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return true
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return false
+}
 
 // reportedPhase is the phase to show: "confirming" when this server started after the record
 // was written (so the restart happened), otherwise the recorded phase.
 func reportedPhase(record pendingRecord) string {
+	if record.Phase == phaseSwitching && updateInProgress() {
+		return phaseUpdating // an update is replacing /kvmapp right now; not a stopped one
+	}
 	if record.Phase != phaseInstalled {
 		return record.Phase
 	}

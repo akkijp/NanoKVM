@@ -847,6 +847,13 @@ class UpdateScriptTest(unittest.TestCase):
         new.write_bytes(installed.read_bytes())
         self.assertEqual(u.migration_reboots(str(new)), "")
 
+    def test_kvm_system_refuses_to_migrate_over_an_unfinished_update(self):
+        source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()
+        body = source[source.index("AppInitResult new_app_init(void)"):]
+        # The check comes before the first write.
+        self.assertLess(body.index("update_switch_unfinished()"), body.index("init_command("))
+        self.assertIn('fopen("/etc/kvm/update-restart-pending", "r")', source)
+
     def test_kvm_system_reboots_when_it_replaces_the_init_script(self):
         source = (SCRIPT.parents[2] / "support/sg2002/kvm_system/main/lib/system_init/system_init.cpp").read_text()
         self.assertIn("cmp -s /kvmapp/system/init.d/S95nanokvm /etc/init.d/S95nanokvm", source)

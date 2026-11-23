@@ -90,9 +90,4 @@ turn:
 
 ## 手動更新
 
-> ファイルのアップロードには SSH が必要です。Web 設定で有効にしてください: `設定 > SSH`
-
-1. [GitHub](https://github.com/sipeed/NanoKVM/releases) から最新のアプリケーションをダウンロードします。
-2. ダウンロードしたファイルを解凍し、解凍したフォルダーの名前を `kvmapp` に変更します。
-3. NanoKVM 上の既存の `/kvmapp` ディレクトリをバックアップし、新しい `kvmapp` フォルダーに置き換えます。
-4. NanoKVM で `/etc/init.d/S95nanokvm restart` を実行してサービスを再起動します。
+このフォーク（akkijp）では、上流の Releases のパッケージで `/kvmapp` を手で置き換えないでください。チェックサムの照合を経ずに上流のアプリへ戻り、ログインのロック・picoclaw の無効化・更新の取得先などのフォークの変更が失われます。入れ方と更新の仕方は [FORK.md](../FORK.md) にあります（最初の 1 回は `update-nanokvm.py`、2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`）。

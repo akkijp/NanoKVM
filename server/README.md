@@ -191,9 +191,4 @@ Note: The manual steps below require a Linux x86-64 host with Go 1.25 or newer; 
 
 ## Manually Update
 
-> File uploads requires SSH. Please enable it in the Web Settings: `Settings > SSH`;
-
-1. Download the latest application from [GitHub](https://github.com/sipeed/NanoKVM/releases);
-2. Unzip the downloaded file and rename the unzipped folder to `kvmapp`;
-3. Back up the existing `/kvmapp` directory on your NanoKVM, then replace it with the new `kvmapp` folder;
-4. Run `/etc/init.d/S95nanokvm restart` on your NanoKVM to restart the service.
+In the akkijp fork, do not replace `/kvmapp` by hand with a package from the upstream releases: that skips the checksum check and brings back the upstream application (no login lockout default, picoclaw enabled, upstream update source). Install and update as described in [FORK.md](../FORK.md): the first install with `update-nanokvm.py`, later ones from the web page or with `python3 /etc/kvm/update-nanokvm.py`.

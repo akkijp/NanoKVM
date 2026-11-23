@@ -485,9 +485,10 @@ func TestNewFilesAreSyncedBeforeInstalledIsRecorded(t *testing.T) {
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
 	var phaseAtSync string
-	syncFilesystems = func() {
+	syncFilesystems = func() error {
 		record, _ := readPending()
 		phaseAtSync = record.Phase
+		return nil
 	}
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, syncFilesystems = oldPending, oldApp, oldBackup, oldSync
@@ -511,5 +512,63 @@ func TestNewFilesAreSyncedBeforeInstalledIsRecorded(t *testing.T) {
 	}
 	if record, _ := readPending(); record.Phase != phaseInstalled || readVersionFile(installAppDir) != "2.5.4.2" {
 		t.Fatalf("after install: record %+v, version %q", record, readVersionFile(installAppDir))
+	}
+}
+
+func TestFailedSyncKeepsSwitching(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncFilesystems
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	syncFilesystems = func() error { return fmt.Errorf("cannot fork") }
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, syncFilesystems = oldPending, oldApp, oldBackup, oldSync
+	})
+	for _, d := range []string{installAppDir, filepath.Join(dir, "new")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new", "version"), []byte("2.5.4.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil {
+		t.Fatal("install must fail when the new files cannot be synced")
+	}
+	if record, pending := readPending(); !pending || record.Phase != phaseSwitching {
+		t.Fatalf("record after a failed sync: %+v %v", record, pending)
+	}
+}
+
+func TestSwitchingDuringARunningUpdateIsReportedAsUpdating(t *testing.T) {
+	usePendingTestPaths(t)
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseSwitching}); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"switching"`) {
+		t.Fatalf("version with a stopped update: %s", body)
+	}
+	if !acquireUpdateLock() {
+		t.Fatal("could not take the update lock")
+	}
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"updating"`) {
+		t.Fatalf("version during an update: %s", body)
+	}
+	releaseUpdateLock()
+
+	// The maintenance updater holds the lock file.
+	other, err := os.OpenFile(updateLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPhase":"updating"`) {
+		t.Fatalf("version during a maintenance update: %s", body)
 	}
 }

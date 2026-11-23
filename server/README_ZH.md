@@ -162,9 +162,4 @@ JSON，并以 `0600` 权限原子写入多用户格式。沿用同一路径可�
 
 ## 手动更新
 
-> 请确保已经在 Web 界面的 `设置 - SSH` 中启用了 SSH 功能，以便上传文件。
-
-1. 从 [GitHub](https://github.com/sipeed/NanoKVM/releases) 下载最新的应用安装包；
-2. 解压缩下载的安装包，并将解压后的文件夹重命名为 `kvmapp`；
-3. 备份 NanoKVM 系统中的 `/kvmapp` 目录，然后用解压后的 `kvmapp` 文件夹替换现有目录。
-4. 在 NanoKVM 中执行 `/etc/init.d/S95nanokvm restart` 重启服务。
+在 akkijp 分支中，请不要用上游 Releases 的安装包手动替换 `/kvmapp`：这样会跳过校验和检查，并恢复上游应用（失去本分支的登录锁定、picoclaw 禁用和更新来源等修改）。安装与更新方法见 [FORK.md](../FORK.md)：首次安装使用 `update-nanokvm.py`，之后通过网页更新或 `python3 /etc/kvm/update-nanokvm.py`。
