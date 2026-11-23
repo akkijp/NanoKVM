@@ -124,7 +124,9 @@ func getLatest() (*Latest, error) {
 		return nil, err
 	}
 
-	latest.Url, err = joinUpdateURL(baseURL, latest.Name)
+	// akkijp fork: fetch the package from the release tagged with the validated version,
+	// not from the moving "latest" alias the manifest came from.
+	latest.Url, err = joinUpdateURL(releaseDownloadBaseURL, latest.Version, latest.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -133,8 +135,8 @@ func getLatest() (*Latest, error) {
 	return &latest, nil
 }
 
-func joinUpdateURL(baseURL string, element string) (string, error) {
-	joined, err := url.JoinPath(baseURL, element)
+func joinUpdateURL(baseURL string, elements ...string) (string, error) {
+	joined, err := url.JoinPath(baseURL, elements...)
 	if err != nil {
 		return "", fmt.Errorf("join update URL: %w", err)
 	}
@@ -147,6 +149,10 @@ func validateLatest(latest *Latest) error {
 	}
 	if !packageNamePattern.MatchString(latest.Name) {
 		return errors.New("invalid update package name")
+	}
+	// akkijp fork: the package must be the one for the advertised version.
+	if latest.Name != "nanokvm_"+latest.Version+".tar.gz" {
+		return errors.New("update package name does not match version")
 	}
 	digest, err := base64.StdEncoding.DecodeString(latest.Sha512)
 	if err != nil || len(digest) != 64 {

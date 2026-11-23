@@ -1,13 +1,14 @@
 #!/bin/bash
-# Resolve an annotated numeric tag from origin and verify its commit is on main.
+# Resolve an annotated numeric tag from origin and verify its commit is on the
+# fork branch for its upstream version: tag 2.5.4.1 must be on akki/2.5.4.
 
 set -euo pipefail
 
 TAG="${1:-}"
 EXPECTED_SHA="${2:-}"
 
-if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-    echo "[ERROR] invalid tag '$TAG', expected MAJOR.MINOR.PATCH" >&2
+if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "[ERROR] invalid tag '$TAG', expected MAJOR.MINOR.PATCH.N" >&2
     exit 1
 fi
 if [ -n "$EXPECTED_SHA" ] && ! echo "$EXPECTED_SHA" | grep -qE '^[0-9a-f]{40}$'; then
@@ -34,9 +35,10 @@ if [ -n "$EXPECTED_SHA" ] && [ "$SOURCE_SHA" != "$EXPECTED_SHA" ]; then
     exit 1
 fi
 
-git fetch --no-tags origin main
+BRANCH="akki/${TAG%.*}"
+git fetch --no-tags origin "refs/heads/$BRANCH"
 if ! git merge-base --is-ancestor "$SOURCE_SHA" FETCH_HEAD; then
-    echo "[ERROR] tag '$TAG' points to a commit outside origin/main" >&2
+    echo "[ERROR] tag '$TAG' points to a commit outside origin/$BRANCH" >&2
     exit 1
 fi
 

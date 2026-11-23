@@ -5,6 +5,9 @@ const (
 	// The preview channel is not published by the fork, so it points at the stable channel.
 	StableURL  = "https://github.com/akkijp/NanoKVM/releases/latest/download"
 	PreviewURL = StableURL
+	// Packages are downloaded from the release tagged with the version named in latest.json,
+	// so a newer "latest" release published mid-update cannot swap the file under us.
+	ReleaseDownloadURL = "https://github.com/akkijp/NanoKVM/releases/download"
 
 	AppDir    = "/kvmapp"
 	BackupDir = "/root/old"

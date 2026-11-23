@@ -43,6 +43,31 @@ stop_process() {
     }
 }
 
+# akkijp fork: the microphone is off. The SoC's audio ADC is built into the
+# kernel, so unbind every sound card that has a capture device. Nothing in
+# NanoKVM records audio. Create /etc/kvm/enable-microphone to keep it on.
+disable_audio_capture() {
+    [ -e /etc/kvm/enable-microphone ] && return 0
+    for pcm in /dev/snd/pcmC*D*c; do
+        [ -e "$pcm" ] || continue
+        card="${pcm#/dev/snd/pcmC}"
+        card="${card%%D*}"
+        dev="$(readlink -f "/sys/class/sound/card$card/device")" || continue
+        [ -n "$dev" ] && [ -w "$dev/driver/unbind" ] || continue
+        if basename "$dev" > "$dev/driver/unbind"; then
+            echo "Microphone disabled: card$card ($(basename "$dev"))"
+        fi
+    done
+}
+
+# akkijp fork: the AI agent runtime (picoclaw) is disabled. Stop a copy that
+# an earlier build installed and keep it from starting at boot.
+disable_picoclaw() {
+    [ -f /etc/init.d/S96picoclaw ] || return 0
+    /etc/init.d/S96picoclaw stop >/dev/null 2>&1 || true
+    mv -f /etc/init.d/S96picoclaw /etc/init.d/disabled-S96picoclaw
+}
+
 stop_services() {
     # The server owns VI/VPSS. Let it release MMF before stopping kvm_system.
     stop_process NanoKVM-Server || return 1
@@ -118,6 +143,9 @@ case "$1" in
             mv /kvmapp/server/web/original.ico /kvmapp/server/web/sipeed.ico
         fi
     fi
+
+    disable_audio_capture
+    disable_picoclaw
 
     # Start services
     start_services || exit 1

@@ -22,6 +22,9 @@ func (s *Service) installRuntime() (string, *PicoclawError) {
 	if s == nil {
 		return "", newPicoclawError(CodeRuntimeUnavailable, "picoclaw service is unavailable")
 	}
+	if runtimeDisabledByFork {
+		return "", newPicoclawError(CodeRuntimeUnavailable, runtimeDisabledMessage)
+	}
 	s.ensureDependencies()
 	log.Debugf("picoclaw install: start, binary=%s, cache=%s", picoclawBinaryPath, picoclawCacheDir)
 

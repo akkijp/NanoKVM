@@ -4,6 +4,7 @@ import { ExternalLinkIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import * as api from '@/api/application.ts';
+import { isValidPackageName } from '@/lib/version.ts';
 
 interface UpdateProps {
   status: string;
@@ -96,8 +97,7 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg }: UpdatePro
   }
 
   function validateFilename(filename: string) {
-    const regex: RegExp = /^nanokvm_\d+\.\d+\.\d+\.tar\.gz$/;
-    return regex.test(filename);
+    return isValidPackageName(filename);
   }
 
   return (

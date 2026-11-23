@@ -38,3 +38,23 @@ func TestUpdateURLsPointAtFork(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateLatestRejectsNameForOtherVersion(t *testing.T) {
+	latest := validLatest()
+	latest.Version, latest.Name = "2.5.4.1", "nanokvm_2.5.4.2.tar.gz"
+	if err := validateLatest(&latest); err == nil {
+		t.Fatal("package name for another version must be rejected")
+	}
+}
+
+func TestUpdateURLsAreExact(t *testing.T) {
+	if StableURL != "https://github.com/akkijp/NanoKVM/releases/latest/download" {
+		t.Errorf("StableURL = %q", StableURL)
+	}
+	if ReleaseDownloadURL != "https://github.com/akkijp/NanoKVM/releases/download" {
+		t.Errorf("ReleaseDownloadURL = %q", ReleaseDownloadURL)
+	}
+	if updateBaseURL != StableURL || releaseDownloadBaseURL != ReleaseDownloadURL {
+		t.Error("update sources must default to the fork's releases")
+	}
+}

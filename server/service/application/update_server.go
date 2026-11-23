@@ -24,7 +24,13 @@ const (
 var (
 	updateServerConfigMu   sync.Mutex
 	updateServerConfigPath = UpdateServerConfigFile
+
+	// akkijp fork: the update source is fixed. Variables only so tests can point them at a local server.
+	updateBaseURL          = StableURL
+	releaseDownloadBaseURL = ReleaseDownloadURL
 )
+
+var errCustomUpdateServerDisabled = errors.New("custom update servers are disabled in this build (akkijp fork)")
 
 type UpdateServerConfig struct {
 	Enabled bool   `json:"enabled"`
@@ -38,16 +44,10 @@ func defaultUpdateServerConfig() UpdateServerConfig {
 func (s *Service) GetUpdateServer(c *gin.Context) {
 	var rsp proto.Response
 
-	cfg, err := loadUpdateServerConfig()
-	if err != nil {
-		log.Errorf("failed to load update server config: %s", err)
-		rsp.ErrRsp(c, -1, "failed to load update server config")
-		return
-	}
-
+	// akkijp fork: a saved custom server is never used, so never report it as enabled.
 	rsp.OkRspWithData(c, &proto.GetUpdateServerRsp{
-		Enabled: cfg.Enabled,
-		URL:     cfg.URL,
+		Enabled: false,
+		URL:     updateBaseURL,
 	})
 }
 
@@ -58,6 +58,11 @@ func (s *Service) SetUpdateServer(c *gin.Context) {
 	// Avoid the shared request logger because the URL may contain credentials.
 	if err := c.ShouldBind(&req); err != nil || req.Enabled == nil {
 		rsp.ErrRsp(c, -1, "invalid arguments")
+		return
+	}
+
+	if *req.Enabled {
+		rsp.ErrRsp(c, -4, errCustomUpdateServerDisabled.Error())
 		return
 	}
 
@@ -87,18 +92,10 @@ func (s *Service) SetUpdateServer(c *gin.Context) {
 	})
 }
 
+// akkijp fork: updates come only from the fork's GitHub Releases. A custom server saved in
+// /etc/kvm/application-update.json (e.g. by an upstream build) and the preview flag are ignored.
 func resolveUpdateBaseURL() (string, error) {
-	cfg, err := loadUpdateServerConfig()
-	if err != nil {
-		return "", err
-	}
-	if cfg.Enabled {
-		return cfg.URL, nil
-	}
-	if isPreviewEnabled() {
-		return PreviewURL, nil
-	}
-	return StableURL, nil
+	return updateBaseURL, nil
 }
 
 func normalizeUpdateServerURL(raw string) (string, error) {

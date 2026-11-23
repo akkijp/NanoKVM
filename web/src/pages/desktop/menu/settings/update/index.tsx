@@ -5,10 +5,8 @@ import { useTranslation } from 'react-i18next';
 
 import * as api from '@/api/application.ts';
 
-import { CustomServer } from './custom-server.tsx';
 import { Offline } from './offline.tsx';
-import { Preview } from './preview.tsx';
-import { isUpToDate } from '@/lib/version.ts';
+import { versionStatus } from '@/lib/version.ts';
 
 type UpdateProps = {
   setIsLocked: (isClosable: boolean) => void;
@@ -21,8 +19,6 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const [currentVersion, setCurrentVersion] = useState('');
   const [latestVersion, setLatestVersion] = useState('');
   const [errMsg, setErrMsg] = useState('');
-  const [isCustomServerEnabled, setIsCustomServerEnabled] = useState(false);
-  const [isCustomServerPending, setIsCustomServerPending] = useState(false);
   const versionRequestRef = useRef(0);
 
   useEffect(() => {
@@ -47,8 +43,16 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
         if (rsp.data?.latest) {
           setLatestVersion(rsp.data.latest);
-          const isLatest = isUpToDate(rsp.data.current, rsp.data.latest);
-          setStatus(isLatest ? 'latest' : 'outdated');
+          const versionState = versionStatus(rsp.data.current, rsp.data.latest);
+          if (versionState === 'unknown') {
+            // akkijp fork: an unreadable version must not be reported as up to date.
+            setStatus('failed');
+            setErrMsg(
+              `${t('settings.update.queryFailed')} (current: "${rsp.data.current}", latest: "${rsp.data.latest}")`
+            );
+          } else {
+            setStatus(versionState);
+          }
         } else {
           setStatus('latest');
         }
@@ -61,7 +65,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   }
 
   function update() {
-    if (status !== 'outdated' || isCustomServerPending) return;
+    if (status !== 'outdated') return;
 
     setIsLocked(true);
     setStatus('updating');
@@ -89,15 +93,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       <div className="text-base">{t('settings.update.title')}</div>
       <Divider className="opacity-50" />
 
-      <Preview
-        checkForUpdates={checkForUpdates}
-        disabled={isCustomServerEnabled || isCustomServerPending}
-      />
-      <CustomServer
-        checkForUpdates={checkForUpdates}
-        onEnabledChange={setIsCustomServerEnabled}
-        onPendingChange={setIsCustomServerPending}
-      />
+      {/* akkijp fork: no preview channel and no custom update server; updates come only from the fork's releases. */}
       <Offline
         status={status}
         setStatus={setStatus}
@@ -144,7 +140,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
               <Button
                 key="confirm"
                 type="primary"
-                disabled={isCustomServerPending}
+                disabled={false}
                 onClick={update}
               >
                 {t('settings.update.confirm')}

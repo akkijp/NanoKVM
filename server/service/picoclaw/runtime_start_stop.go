@@ -24,6 +24,9 @@ func (s *Service) startRuntimeContext(ctx context.Context) (string, string, *Pic
 	if s == nil {
 		return "", "", newPicoclawError(CodeRuntimeStartFailed, "picoclaw service is unavailable")
 	}
+	if runtimeDisabledByFork {
+		return "", "", newPicoclawError(CodeRuntimeStartFailed, runtimeDisabledMessage)
+	}
 	if lifecycleErr := runtimeLifecycleOperationError(ctx); lifecycleErr != nil {
 		return "", "", lifecycleErr
 	}

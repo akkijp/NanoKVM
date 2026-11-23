@@ -36,7 +36,7 @@ help:
 	@echo "Available targets:"
 	@echo "  help          - Show this help message"
 	@echo "  check-image   - Check builder Docker image and show versions"
-	@echo "  builder-image - Build Docker image if not exists"
+	@echo "  builder-image - Build Docker image (cached layers are reused)"
 	@echo "  rebuild-image - Force rebuild Docker image"
 	@echo "  shell         - Enter interactive builder environment"
 	@echo "  app           - Build Go application server"
@@ -70,14 +70,12 @@ check-image: check-root
 		docker run --rm -i $(IMAGE_NAME) riscv64-unknown-linux-musl-gcc -v && \
 		echo ""
 
-# Build Docker image if it doesn't exist
+# Build the Docker image from docker/Dockerfile every time. The layer cache
+# keeps this fast, and a stale image can never outlive a change to the pinned
+# toolchain, Go or MaixCDK versions (akkijp fork).
 builder-image: check-root
-	@if ! docker image inspect $(IMAGE_NAME) >/dev/null 2>&1; then \
-		echo "Building Docker image..."; \
-		docker build $(DOCKER_BUILD_ARGS) -t $(IMAGE_NAME) -f docker/Dockerfile ./; \
-	else \
-		echo "Docker image $(IMAGE_NAME) already exists."; \
-	fi
+	@echo "Building Docker image..."
+	@docker build $(DOCKER_BUILD_ARGS) -t $(IMAGE_NAME) -f docker/Dockerfile ./
 
 # Force rebuild Docker image
 rebuild-image: check-root

@@ -11,7 +11,7 @@ if [ -z "$ASSET_DIR" ] || [ -z "$VERSION" ]; then
     exit 1
 fi
 if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-    echo "[ERROR] invalid version '$VERSION', expected MAJOR.MINOR.PATCH" >&2
+    echo "[ERROR] invalid version '$VERSION', expected MAJOR.MINOR.PATCH[.N]" >&2
     exit 1
 fi
 
