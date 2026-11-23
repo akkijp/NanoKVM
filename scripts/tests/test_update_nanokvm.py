@@ -600,8 +600,8 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.set_restart_pending = lambda phase, a, b: (order.append(phase), real_set(phase, a, b))[1]
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
-        self.assertLess(order.index("switching"), order.index("sync"))
-        self.assertLess(order.index("sync"), order.index("installed"))
+        self.assertLess(order.index("sync"), order.index("switching"))  # the stage, before anything stops
+        self.assertEqual(order[-1], "installed")
 
     def test_write_back_error_keeps_switching_and_does_not_start(self):
         real_fsync_path = self.u.fsync_path
@@ -613,10 +613,54 @@ class UpdateScriptTest(unittest.TestCase):
 
         self.u.fsync_path = fsync_path
         path, digest = self.package("2.5.4.1")
+        # Caught in the stage: nothing stopped, nothing recorded.
+        self.assert_rejected("could not write the new version to the card", file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
+        self.assertEqual(self.calls(), "")
+
+    def test_write_back_error_of_the_switch_keeps_switching(self):
+        real_fsync_path = self.u.fsync_path
+        stage_done = {"yes": False}
+        real_tree = self.u.fsync_tree
+        self.u.fsync_tree = lambda path: (real_tree(path), stage_done.update(yes=True))[0]
+
+        def fsync_path(path):
+            if stage_done["yes"] and path == os.path.dirname(self.u.APP_DIR) and os.path.exists(self.u.RESTART_PENDING):
+                raise OSError(5, "Input/output error")
+            real_fsync_path(path)
+
+        self.u.fsync_path = fsync_path
+        path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "writing it to the card failed"):
             self.run_update(file=path, sha512=digest)
         self.assertEqual(json.loads(pathlib.Path(self.u.RESTART_PENDING).read_text())["phase"], "switching")
-        self.assertFalse(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
+
+    def test_unlistable_directory_is_a_write_back_error(self):
+        broken = self.base / "tree/sub"
+        broken.mkdir(parents=True)
+        real_scandir = os.scandir
+
+        def scandir(path="."):
+            if str(path) == str(broken):
+                raise OSError(5, "Input/output error")
+            return real_scandir(path)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.path, self.u.os.scandir = os.path, scandir
+        import unittest.mock as mock
+        with mock.patch("os.scandir", scandir):
+            with self.assertRaises(OSError):
+                self.u.fsync_tree(str(self.base / "tree"))
+
+    def test_previous_version_must_be_a_version(self):
+        for bad in (b"2.5.4\x00", b"2.5.4 junk", b"v2.5.4", b"2.5"):
+            with self.subTest(value=bad):
+                (pathlib.Path(self.u.APP_DIR) / "version").write_bytes(bad + b"\n")
+                with self.assertRaisesRegex(self.u.UpdateError, "not a version|cannot read"):
+                    self.u.read_previous_version()
+        for good in (b"2.5.4", b"2.4.3", b"2.5.4.1", b"2.5.0-rc1", b"2.5.4+build.7"):
+            (pathlib.Path(self.u.APP_DIR) / "version").write_bytes(good + b"\n")
+            self.assertEqual(self.u.read_previous_version(), good.decode())
 
     def test_trash_lives_in_the_updater_area_and_inputs_there_are_refused(self):
         self.assertTrue(self.u.backup_trash().startswith(self.u.WORK_PARENT + os.sep))
@@ -1022,11 +1066,12 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_record_made_visible_before_a_failed_sync_is_taken_back(self):
         real_fsync = os.fsync
-        calls = {"n": 0}
+        state = {"failed": False}
 
         def fsync(fd):
-            calls["n"] += 1
-            if calls["n"] == 2:  # the directory sync after the rename
+            # The first sync after the record has appeared: the directory sync after its rename.
+            if not state["failed"] and os.path.exists(self.u.RESTART_PENDING):
+                state["failed"] = True
                 raise OSError("I/O error")
             return real_fsync(fd)
 
@@ -1283,7 +1328,8 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text(), "")
         self.assertEqual(status, "on")
 
-    def run_s95(self, action, mic_fails=False, picoclaw_fails=False, pidof_after_start=False, expect_status=None):
+    def run_s95(self, action, mic_fails=False, picoclaw_fails=False, pidof_after_start=False, expect_status=None,
+                kvm_up=None, server_up=None):
         """Run the real S95nanokvm branch with everything that touches the device stubbed out,
         recording the order of the fork's boot steps and the daemon starts."""
         log = self.base / "order.log"
@@ -1291,9 +1337,12 @@ class MicrophoneTest(unittest.TestCase):
         text = text.replace("exec 9>/run/nanokvm-service.lock || exit 1", "exec 9>/dev/null")
         text = text.replace("flock -n 9 ||", "true ||")
         # Daemons: real processes that either stay up for a while or exit at once.
-        daemon = "command sleep 4" if pidof_after_start else "true"
-        text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", f"record daemon-kvm_system; {daemon} >/dev/null 2>&1 &")
-        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", f"record daemon-NanoKVM-Server; {daemon} >/dev/null 2>&1 &")
+        kvm_up = pidof_after_start if kvm_up is None else kvm_up
+        server_up = pidof_after_start if server_up is None else server_up
+        kvm_daemon = "command sleep 4" if kvm_up else "true"
+        server_daemon = "command sleep 4" if server_up else "true"
+        text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", f"record daemon-kvm_system; {kvm_daemon} >/dev/null 2>&1 &")
+        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", f"record daemon-NanoKVM-Server; {server_daemon} >/dev/null 2>&1 &")
         text = text.replace("(sleep 15", "(command sleep 1")
         # Every write the script makes goes under the temp dir, never to the host.
         fake = self.base / "fs"
@@ -1380,6 +1429,22 @@ sleep() {{ :; }}
                     self.assertEqual(order, ["mic", "picoclaw"])
                     self.assertIn("not starting", self.last_result.stderr)
                     self.assertTrue(record.exists())
+
+    def test_record_is_kept_when_either_daemon_dies(self):
+        base = self.base
+        for kvm_up, server_up in ((True, False), (False, True)):
+            with self.subTest(kvm_up=kvm_up, server_up=server_up):
+                self.base = pathlib.Path(tempfile.mkdtemp(dir=base))
+                fake = self.base / "fs"
+                record = fake / "etc/kvm/update-restart-pending"
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text('{"from":"2.4.3","to":"2.5.4.1","phase":"installed"}\n')
+                (fake / "kvmapp").mkdir(parents=True, exist_ok=True)
+                (fake / "kvmapp/version").write_text("2.5.4.1\n")
+                self.run_s95("start", kvm_up=kvm_up, server_up=server_up)
+                __import__("time").sleep(2)
+                self.assertTrue(record.exists())
+        self.base = base
 
     def test_record_changed_during_the_check_is_kept(self):
         fake = self.base / "fs"

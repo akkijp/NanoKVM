@@ -87,6 +87,7 @@ FREE_RESERVE_PERCENT = 5
 # Every part 1-9 digits (at most 39 characters): the same rule as scripts/package.sh and the
 # server (version.go), so whatever can be built can be installed and read back later.
 VERSION_RE = re.compile(r"^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(\.[0-9]{1,9})?$")
+PREVIOUS_VERSION_RE = re.compile(r"\A[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(\.[0-9]{1,9})?([-+][0-9A-Za-z.+-]{1,32})?\Z")
 REQUIRED_FILES = (
     "version",
     "server/NanoKVM-Server",
@@ -643,9 +644,14 @@ def fsync_path(path: str) -> None:
         os.close(fd)
 
 
+def raise_error(error: OSError) -> None:
+    raise error
+
+
 def fsync_tree(root_dir: str) -> None:
-    """fsync every file and directory under root_dir; raises on the first write-back error."""
-    for current, dirs, files in os.walk(root_dir):
+    """fsync every file and directory under root_dir; raises on the first error (including one
+    listing a directory, which os.walk would otherwise skip silently)."""
+    for current, dirs, files in os.walk(root_dir, onerror=raise_error):
         for name in files:
             path = os.path.join(current, name)
             if not os.path.islink(path):
@@ -775,8 +781,10 @@ def read_previous_version() -> str:
             value = f.read().decode("utf-8").strip()
     except (OSError, UnicodeDecodeError) as e:
         raise UpdateError(f"cannot read {APP_DIR}/version ({e}); nothing was changed")
-    if not value or "\n" in value or len(value) > 64:  # generous: upstream versions may carry suffixes
-        raise UpdateError(f"{APP_DIR}/version is not a version; nothing was changed")
+    # Upstream versions may carry a pre-release or build suffix; nothing else is accepted (the
+    # value goes into the record, which kvm_system parses strictly).
+    if not PREVIOUS_VERSION_RE.match(value):
+        raise UpdateError(f"{APP_DIR}/version is not a version ({value!r}); nothing was changed")
     return value
 
 
@@ -792,6 +800,14 @@ def install(source_dir: str, version: str) -> None:
     with open(os.path.join(source_dir, STAGE_MARK_NAME), "w") as f:
         f.write("staged by update-nanokvm.py\n")
     shutil.move(source_dir, STAGE_DIR)
+    # The new files are made durable in the stage, before anything is stopped (fsync reports the
+    # write-back errors that sync cannot). The switch itself then only renames directories.
+    try:
+        fsync_tree(STAGE_DIR)
+        fsync_path(os.path.dirname(STAGE_DIR))
+    except OSError as e:
+        drop_stage()
+        raise UpdateError(f"could not write the new version to the card ({e}); nothing was changed")
     with Uninterruptible():
         switch_and_start(version, reboots, previous)
 
@@ -869,9 +885,8 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     # "installed" record over files that were not written yet. fsync (unlike sync) reports
     # write-back errors.
     try:
-        fsync_tree(APP_DIR)
         for directory in {os.path.dirname(APP_DIR), os.path.dirname(BACKUP_DIR)}:
-            fsync_path(directory)
+            fsync_path(directory)  # the renames
     except OSError as e:
         raise UpdateError(
             f"{version} was put in place, but writing it to the card failed ({e}). It is left marked as "

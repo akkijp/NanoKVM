@@ -61,9 +61,19 @@ func installPreparedPackage(sourceDir string) error {
 	// akkijp fork: from here until the new version is seen running, /root/old is the version
 	// known to work. Record that before touching anything; no record, no switch (pending.go).
 	record := pendingRecord{From: readVersionFile(installAppDir), To: readVersionFile(sourceDir), Phase: phaseSwitching}
-	// The previous backup goes first: if it cannot be removed, /kvmapp is untouched and no
-	// "switching" record may be left to block the next boot.
-	if err := os.RemoveAll(installBackupDir); err != nil {
+	// The new files are made final (permissions) and durable where they are staged, before
+	// anything changes: fsync reports write-back errors that sync(1) cannot, and the staged tree
+	// holds no runtime files that could vanish while it is walked.
+	if err := utils.ChmodRecursively(sourceDir, 0o755); err != nil {
+		return fmt.Errorf("failed to chmod: %w", err)
+	}
+	if err := fsyncTree(sourceDir); err != nil {
+		return fmt.Errorf("write the new version to disk: %w", err)
+	}
+	// The previous backup is renamed away and removed with nothing recorded yet: if this is cut
+	// short, /kvmapp is whole and the next boot starts it; the leftover is finished next time
+	// (here or by update-nanokvm.py, which uses the same place).
+	if err := removePreviousBackup(); err != nil {
 		return fmt.Errorf("failed to remove backup: %w", err)
 	}
 	if err := writePending(record); err != nil {
@@ -90,13 +100,8 @@ func installPreparedPackage(sourceDir string) error {
 		return err
 	}
 
-	if err := utils.ChmodRecursively(installAppDir, 0o755); err != nil {
-		return fmt.Errorf("failed to chmod: %w", err)
-	}
-
-	// The new files, their permissions and the directories reach the disk before the record says
-	// "installed": a power cut in between must leave "switching", never "installed" over files
-	// that were not written yet.
+	// The moves changed directory entries: make those durable before the record says
+	// "installed" (a power cut in between leaves "switching").
 	if err := syncFilesystems(); err != nil {
 		// Not known to be on disk: stay "switching" (the next boot will not start from it).
 		return fmt.Errorf("sync the new version to disk: %w", err)
@@ -110,12 +115,28 @@ func installPreparedPackage(sourceDir string) error {
 	return nil
 }
 
-// syncFilesystems makes the switched app durable and reports write-back errors: every file and
-// directory under /kvmapp is fsync'ed (fsync returns the I/O errors that sync(1) cannot), then
-// the parents of /kvmapp and /root/old, whose entries the switch changed. A variable so tests can
-// see the order and make it fail.
+// syncFilesystems makes the switch durable: the files were already fsync'ed in the stage, so
+// only directories remain (those under /kvmapp, whose entries the moves created, and the parents
+// of /kvmapp and /root/old). A directory that disappears meanwhile (runtime state of the running
+// app) is skipped; any other error is returned. A variable so tests can see the order and make
+// it fail.
 var syncFilesystems = func() error {
-	if err := fsyncTree(installAppDir); err != nil {
+	err := filepath.WalkDir(installAppDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if err := fsyncPath(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("fsync %s: %w", path, err)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	for _, dir := range []string{filepath.Dir(installAppDir), filepath.Dir(installBackupDir)} {
@@ -124,6 +145,28 @@ var syncFilesystems = func() error {
 		}
 	}
 	return nil
+}
+
+// installTrashDir is where the previous backup is renamed to before it is removed; the same place
+// as kvmapp/system/update-nanokvm.py uses, on the same filesystem as /root/old.
+var installTrashDir = "/root/.kvm-update/old.removing"
+
+func removePreviousBackup() error {
+	if _, err := os.Lstat(installTrashDir); err == nil {
+		if err := os.RemoveAll(installTrashDir); err != nil { // finish a removal cut short
+			return err
+		}
+	}
+	if _, err := os.Lstat(installBackupDir); err != nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(installTrashDir), 0o700); err != nil {
+		return err
+	}
+	if err := os.Rename(installBackupDir, installTrashDir); err != nil {
+		return err
+	}
+	return os.RemoveAll(installTrashDir)
 }
 
 // fsyncPath opens one file or directory and fsyncs it. A variable so tests can make it fail.
@@ -212,7 +255,7 @@ func removeIfOnlyDirs(dir string) bool {
 }
 
 func backupCurrentApp() error {
-	// akkijp fork: the previous backup was removed before the record was written.
+	// akkijp fork: the previous backup was removed (via installTrashDir) before the record was written.
 	if err := utils.MoveFilesRecursively(installAppDir, installBackupDir); err != nil {
 		return fmt.Errorf("failed to backup app: %w", err)
 	}

@@ -74,7 +74,19 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             setStatus(rsp.data.restartPhase === 'updating' ? 'updating' : 'confirming');
             if (!watchUntilRef.current) watchUntilRef.current = Date.now() + 5 * 60 * 1000;
             scheduleRecheck();
+          } else if (
+            rsp.data.restartPhase === 'installed' &&
+            reloadWhenSettledRef.current &&
+            Date.now() < watchUntilRef.current
+          ) {
+            // Our own update or retry: the old server may still answer before it is restarted.
+            setStatus('updating');
+            scheduleRecheck();
           } else {
+            // Waiting for the user (retry or manual recovery): stop watching, unlock the settings.
+            watchUntilRef.current = 0;
+            reloadWhenSettledRef.current = false;
+            setIsLocked(false);
             setStatus(rsp.data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
           }
           return;
@@ -150,15 +162,23 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           checkForUpdates();
           return;
         }
-        // Restarting (maybe rebooting): watch the version API until the device answers again and
-        // the restart has settled, then reload; never reload into a page that cannot load.
-        reloadWhenSettledRef.current = true;
-        watchUntilRef.current = Date.now() + 10 * 60 * 1000;
-        scheduleRecheck();
+        watchRestart();
       })
       .catch((error: unknown) => {
         refused(error instanceof Error ? error.message : t('settings.update.updateFailed'));
       });
+  }
+
+  // akkijp fork: after an update or a restart retry the device restarts, and may reboot (a new
+  // HDMI driver or init script). Watch the version API until it answers again and the update has
+  // settled, then reload; never reload into a page that cannot load.
+  function watchRestart() {
+    setIsLocked(true);
+    setStatus('updating');
+    setErrMsg('');
+    reloadWhenSettledRef.current = true;
+    watchUntilRef.current = Date.now() + 10 * 60 * 1000;
+    scheduleRecheck();
   }
 
   function update() {
@@ -171,17 +191,16 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       .update()
       .then((rsp: any) => {
         if (rsp.code !== 0) {
-          setStatus('failed');
-          setErrMsg(t('settings.update.updateFailed'));
-        }
-      })
-      .finally(() => {
-        setTimeout(() => {
           setIsLocked(false);
-          setErrMsg('');
-
-          window.location.reload();
-        }, 12000);
+          setStatus('failed');
+          setErrMsg(rsp.msg || t('settings.update.updateFailed'));
+          return;
+        }
+        watchRestart();
+      })
+      .catch(() => {
+        // The server may already be restarting into the new version.
+        watchRestart();
       });
   }
 
@@ -200,6 +219,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             setStatus={setStatus}
             setIsLocked={setIsLocked}
             setErrMsg={setErrMsg}
+            onInstalled={watchRestart}
           />
           <Divider className="opacity-50" />
         </>

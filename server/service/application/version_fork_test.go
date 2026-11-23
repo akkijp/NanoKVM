@@ -291,8 +291,14 @@ func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	oldPending, oldApp, oldBackup := restartPendingPath, installAppDir, installBackupDir
 	restartPendingPath = filepath.Join(dir, "missing-dir", "restart-pending") // cannot be written
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	oldTrashForTest := installTrashDir
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() { installTrashDir = oldTrashForTest })
 	t.Cleanup(func() { restartPendingPath, installAppDir, installBackupDir = oldPending, oldApp, oldBackup })
-	if err := installPreparedPackage(filepath.Join(dir, "unused")); err == nil || !strings.Contains(err.Error(), "record the pending restart") {
+	if err := os.MkdirAll(filepath.Join(dir, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "record the pending restart") {
 		t.Fatalf("install without a record must not start: %v", err)
 	}
 }
@@ -458,6 +464,9 @@ func TestDirectorySyncFailureLeavesTheAppUntouched(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncDir
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	oldTrashForTest := installTrashDir
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() { installTrashDir = oldTrashForTest })
 	syncDir = func(string) error { return fmt.Errorf("I/O error") }
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, syncDir = oldPending, oldApp, oldBackup, oldSync
@@ -484,6 +493,9 @@ func TestNewFilesAreSyncedBeforeInstalledIsRecorded(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncFilesystems
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	oldTrashForTest := installTrashDir
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() { installTrashDir = oldTrashForTest })
 	var phaseAtSync string
 	syncFilesystems = func() error {
 		record, _ := readPending()
@@ -520,6 +532,9 @@ func TestFailedSyncKeepsSwitching(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldSync := restartPendingPath, installAppDir, installBackupDir, syncFilesystems
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	oldTrashForTest := installTrashDir
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() { installTrashDir = oldTrashForTest })
 	syncFilesystems = func() error { return fmt.Errorf("cannot fork") }
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, syncFilesystems = oldPending, oldApp, oldBackup, oldSync
@@ -595,6 +610,9 @@ func TestWriteBackErrorKeepsSwitching(t *testing.T) {
 	oldPending, oldApp, oldBackup, oldFsync := restartPendingPath, installAppDir, installBackupDir, fsyncPath
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	oldTrashForTest := installTrashDir
+	installTrashDir = filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() { installTrashDir = oldTrashForTest })
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, fsyncPath = oldPending, oldApp, oldBackup, oldFsync
 	})
@@ -622,7 +640,32 @@ func TestWriteBackErrorKeepsSwitching(t *testing.T) {
 	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "input/output error") {
 		t.Fatalf("install with a write-back error: %v", err)
 	}
-	if record, _ := readPending(); record.Phase != phaseSwitching {
-		t.Fatalf("record after a write-back error: %+v", record)
+	// Caught in the stage: nothing recorded, the app untouched.
+	if _, pending := readPending(); pending {
+		t.Fatal("a write-back error in the stage must not leave a record")
+	}
+	if readVersionFile(installAppDir) != "2.5.4.1" {
+		t.Fatal("the app was touched")
+	}
+}
+
+func TestPreviousBackupIsRemovedThroughTheTrash(t *testing.T) {
+	dir := t.TempDir()
+	oldBackup, oldTrash := installBackupDir, installTrashDir
+	installBackupDir, installTrashDir = filepath.Join(dir, "old"), filepath.Join(dir, ".kvm-update", "old.removing")
+	t.Cleanup(func() { installBackupDir, installTrashDir = oldBackup, oldTrash })
+	// A removal cut short earlier left the trash; a complete backup is in place.
+	for _, d := range []string{filepath.Join(installTrashDir, "kvm"), filepath.Join(installBackupDir, "server")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removePreviousBackup(); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{installBackupDir, installTrashDir} {
+		if _, err := os.Lstat(d); err == nil {
+			t.Fatalf("%s is still there", d)
+		}
 	}
 }

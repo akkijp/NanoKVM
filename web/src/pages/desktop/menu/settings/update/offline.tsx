@@ -11,9 +11,11 @@ interface UpdateProps {
   setStatus: (status: string) => void;
   setIsLocked: (isClosable: boolean) => void;
   setErrMsg: (msg: string) => void;
+  // akkijp fork: called once the package is accepted; the parent watches the restart.
+  onInstalled: () => void;
 }
 
-export const Offline = ({ status, setStatus, setIsLocked, setErrMsg }: UpdateProps) => {
+export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled }: UpdateProps) => {
   const { t } = useTranslation();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -71,7 +73,10 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg }: UpdatePro
       .offlineUpdate(formData, checksum)
       .then(async (rsp: Response) => {
         // The proxy may return 502 after the update stops the old server.
-        if (rsp.status === 502) return;
+        if (rsp.status === 502) {
+          onInstalled();
+          return;
+        }
         if (!rsp.ok) throw new Error(`HTTP error ${rsp.status}`);
 
         const rspj = await rsp.json();
@@ -82,11 +87,9 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg }: UpdatePro
           throw new Error(message);
         }
       })
-      .then(() => {
-        setTimeout(() => {
-          setIsLocked(false);
-          window.location.reload();
-        }, 12000);
+      .then((result: unknown) => {
+        if (result !== undefined) return;
+        onInstalled();
       })
       .catch((error: unknown) => {
         setIsLocked(false);
