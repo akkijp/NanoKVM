@@ -17,6 +17,9 @@ interface UpdateProps {
   onFailed: (message: string) => void;
 }
 
+// A definite refusal from the device (as opposed to a lost connection).
+class RefusedError extends Error {}
+
 // nanokvm_2.5.4.2.tar.gz -> 2.5.4.2 (the name was validated before the upload)
 function versionOf(filename: string) {
   return filename.replace(/^nanokvm_/, '').replace(/\.tar\.gz$/, '');
@@ -79,16 +82,17 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
     api
       .offlineUpdate(formData, checksum)
       .then(async (rsp: Response) => {
-        // The proxy may return 502 after the update stops the old server: find out by watching.
-        if (rsp.status === 502) return;
-        if (!rsp.ok) throw new Error(`HTTP error ${rsp.status}`);
+        // A gateway error (the old server stopped, or the proxy gave up while the device unpacks):
+        // the outcome is unknown, find out by watching.
+        if ([502, 503, 504].includes(rsp.status)) return;
+        if (!rsp.ok) throw new RefusedError(`HTTP error ${rsp.status}`);
 
         const rspj = await rsp.json();
         if (rspj.code !== 0) {
           const message = rspj.msg?.includes('sha256 checksum mismatch')
             ? t('settings.update.offline.checksumMismatch')
             : rspj.msg || t('settings.update.offline.updateFailed');
-          throw new Error(message);
+          throw new RefusedError(message);
         }
       })
       .then((result: unknown) => {
@@ -96,7 +100,12 @@ export const Offline = ({ status, setStatus, setIsLocked, setErrMsg, onInstalled
         onInstalled(versionOf(file.name));
       })
       .catch((error: unknown) => {
-        onFailed(error instanceof Error ? error.message : t('settings.update.offline.updateFailed'));
+        if (error instanceof RefusedError) {
+          onFailed(error.message); // a definite answer, e.g. a checksum mismatch
+          return;
+        }
+        // The connection was lost: the device may still install it. Watch for the version.
+        onInstalled(versionOf(file.name));
       });
   }
 

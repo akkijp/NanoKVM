@@ -34,6 +34,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const serverStartedRef = useRef(0);
   const watchStartedFromRef = useRef(0);
   const watchSawPendingRef = useRef(false);
+  const watchPreviousRef = useRef('');
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -76,10 +77,20 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           if (pending) watchSawPendingRef.current = true;
           const state = {
             target: watchTargetRef.current,
+            previous: watchPreviousRef.current,
             startedFrom: watchStartedFromRef.current,
             sawPending: watchSawPendingRef.current
           };
           if (watchFinished(state, rsp.data)) {
+            if ((rsp.data.microphone || '').startsWith('FAILED')) {
+              // Updated, but the microphone stayed on: keep the page, with the warning, unlocked.
+              watchUntilRef.current = 0;
+              reloadWhenSettledRef.current = false;
+              setIsLocked(false);
+              setStatus('latest');
+              setErrMsg('');
+              return;
+            }
             window.location.reload(); // the target version runs, after a real restart, and has settled
             return;
           }
@@ -162,10 +173,10 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         if (!mountedRef.current) return;
         const data = rsp?.data;
         if (rsp?.code === 0 && data?.restartPending) {
-          setCurrentVersion(data.current);
-          setLatestVersion(data.pendingVersion || '');
-          setStatus(data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
-          setErrMsg(message);
+          // Another update is running, restarting or being confirmed, or one stopped: let the
+          // normal query show it (it keeps watching the first three, and asks for recovery only
+          // when it stopped half-way).
+          checkForUpdates();
           return;
         }
         setStatus('failed');
@@ -235,6 +246,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     watchTargetRef.current = target;
     watchStartedFromRef.current = serverStartedRef.current;
     watchSawPendingRef.current = false;
+    watchPreviousRef.current = currentVersion;
     setIsLocked(true);
     setStatus('updating');
     setErrMsg('');

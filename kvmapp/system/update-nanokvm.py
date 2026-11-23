@@ -473,8 +473,11 @@ def migration_reboots(new_init_script: str) -> str:
     return ""
 
 
-# Present in every app version; a tree without them is being moved by another update.
-APP_CORE_FILES = ("version", "server/NanoKVM-Server", "kvm_system/kvm_system")
+# Present in every app version; a tree without them is being moved by another update. (The
+# version file is not: upstream servers treat a missing one as 1.0.0, so very old devices may
+# lack it; a version file that exists but cannot be read is still refused, see
+# read_previous_version.)
+APP_CORE_FILES = ("server/NanoKVM-Server", "kvm_system/kvm_system")
 
 
 def check_not_interrupted() -> None:
@@ -775,10 +778,13 @@ def check_same_filesystem() -> None:
 
 
 def read_previous_version() -> str:
-    """The running version, read and validated before anything is stopped."""
+    """The running version, read and validated before anything is stopped. A missing version
+    file (very old devices) gives "", which every reader of the record accepts."""
     try:
         with open(os.path.join(APP_DIR, "version"), "rb") as f:
             value = f.read().decode("utf-8").strip()
+    except FileNotFoundError:
+        return ""
     except (OSError, UnicodeDecodeError) as e:
         raise UpdateError(f"cannot read {APP_DIR}/version ({e}); nothing was changed")
     # Upstream versions may carry a pre-release or build suffix; nothing else is accepted (the

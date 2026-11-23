@@ -706,6 +706,19 @@ class UpdateScriptTest(unittest.TestCase):
             with self.subTest(kw=kw):
                 self.assert_rejected("empty value", **kw)
 
+    def test_app_without_a_version_file_can_be_updated(self):
+        (pathlib.Path(self.u.APP_DIR) / "version").unlink()  # a very old device
+        path, digest = self.package("2.5.4.1")
+        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
+
+    def test_unreadable_version_file_is_still_refused(self):
+        version = pathlib.Path(self.u.APP_DIR) / "version"
+        version.unlink()
+        version.mkdir()  # exists, but cannot be read as a file
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "cannot read"):
+            self.run_update(file=path, sha512=digest)
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)

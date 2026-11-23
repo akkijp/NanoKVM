@@ -96,13 +96,36 @@ if ! printf '%s  %s\n' "$SHA256" "$TARBALL_NAME" | cmp -s - "$CHECKSUM"; then
     exit 1
 fi
 
-MANIFEST_VERSION=$(jq -er '.version | select(type == "string" and length > 0)' "$MANIFEST")
-MANIFEST_NAME=$(jq -er '.name | select(type == "string" and length > 0)' "$MANIFEST")
-MANIFEST_SIZE=$(jq -er '.size | select(type == "number" and . >= 0 and floor == .)' "$MANIFEST")
-MANIFEST_FORMAT=$(jq -er '.manifest_version | select(type == "number" and . == 2)' "$MANIFEST")
-MANIFEST_SIZE_BYTES=$(jq -er '.size_bytes | select(type == "number" and . > 0 and floor == .)' "$MANIFEST")
-MANIFEST_UNPACKED_SIZE_BYTES=$(jq -er '.unpacked_size_bytes | select(type == "number" and . > 0 and floor == .)' "$MANIFEST")
-MANIFEST_SHA512=$(jq -er '.sha512 | select(type == "string" and length > 0)' "$MANIFEST")
+# akkijp fork: read latest.json with python3 (already needed above) instead of jq, so the build
+# VM needs no extra tool. Each field is checked as before; a missing or wrong field fails.
+manifest_field() {
+    python3 - "$MANIFEST" "$1" <<'PY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+value = json.load(open(path)).get(key)
+def is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+ok = {
+    "version": isinstance(value, str) and len(value) > 0,
+    "name": isinstance(value, str) and len(value) > 0,
+    "sha512": isinstance(value, str) and len(value) > 0,
+    "size": is_int(value) and value >= 0,
+    "manifest_version": is_int(value) and value == 2,
+    "size_bytes": is_int(value) and value > 0,
+    "unpacked_size_bytes": is_int(value) and value > 0,
+}[key]
+if not ok:
+    sys.exit(1)
+print(value)
+PY
+}
+MANIFEST_VERSION=$(manifest_field version)
+MANIFEST_NAME=$(manifest_field name)
+MANIFEST_SIZE=$(manifest_field size)
+MANIFEST_FORMAT=$(manifest_field manifest_version)
+MANIFEST_SIZE_BYTES=$(manifest_field size_bytes)
+MANIFEST_UNPACKED_SIZE_BYTES=$(manifest_field unpacked_size_bytes)
+MANIFEST_SHA512=$(manifest_field sha512)
 
 if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
     echo "[ERROR] latest.json version '$MANIFEST_VERSION' does not match '$VERSION'" >&2
