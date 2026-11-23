@@ -53,12 +53,15 @@ BACKUP_DIR = "/root/old"
 # Work directories live only under this directory, so cleaning up leftovers never touches
 # anything else in /root.
 WORK_PARENT = "/root/.kvm-update"
+SERVICE_LOG = "/root/.kvm-update/service.log"
 LOCK_FILE = "/run/nanokvm-update.lock"
 # The installed init script stops the running app. The new app is started with
 # its own script, so its first start already runs the fork's boot steps.
 STOP_SCRIPT = "/etc/init.d/S95nanokvm"
 APP_INIT_SCRIPT = "system/init.d/S95nanokvm"
 STAGE_DIR = "/kvmapp.new"
+# Written next to STAGE_DIR while this script owns it; a /kvmapp.new without it is not ours.
+STAGE_MARK = "/kvmapp.new.update-nanokvm"
 
 DAEMONS = ("NanoKVM-Server", "kvm_system")
 STOP_TIMEOUT = 20
@@ -292,9 +295,13 @@ def extract(package: str, version: str, work: str) -> str:
 
 
 def service(script: str, action: str) -> int:
-    say(f"{script} {action}")
+    """Run an init script detached from the terminal: its output goes to SERVICE_LOG, so a closed
+    SSH session cannot make it fail (S95nanokvm ends with echo "OK")."""
+    say(f"{script} {action} (output in {SERVICE_LOG})")
     try:
-        return subprocess.run([script, action]).returncode
+        os.makedirs(os.path.dirname(SERVICE_LOG), 0o700, exist_ok=True)
+        with open(SERVICE_LOG, "ab") as log:
+            return subprocess.run([script, action], stdin=subprocess.DEVNULL, stdout=log, stderr=log).returncode
     except OSError as e:
         say(f"cannot run {script}: {e}", err=True)
         return 127
@@ -388,6 +395,16 @@ def prepare(source_dir: str) -> None:
             os.chmod(os.path.join(root, name), 0o755)
 
 
+def remove_stage_mark() -> None:
+    if os.path.exists(STAGE_MARK):
+        os.remove(STAGE_MARK)
+
+
+def drop_stage() -> None:
+    shutil.rmtree(STAGE_DIR, ignore_errors=True)
+    remove_stage_mark()
+
+
 def switch() -> None:
     """Move the old app to BACKUP_DIR and the staged one to APP_DIR. If any step fails,
     the old app is put back in APP_DIR before the error is raised."""
@@ -418,8 +435,10 @@ def install(source_dir: str, version: str) -> None:
     check_same_filesystem()
     reboots = migration_reboots()
     prepare(source_dir)
-    if os.path.exists(STAGE_DIR):
-        shutil.rmtree(STAGE_DIR)
+    if os.path.lexists(STAGE_DIR):
+        raise UpdateError(f"{STAGE_DIR} exists; move it away first")
+    with open(STAGE_MARK, "w") as f:
+        f.write("staged by update-nanokvm.py\n")
     shutil.move(source_dir, STAGE_DIR)
     with Uninterruptible():
         switch_and_start(version, reboots)
@@ -429,19 +448,20 @@ def switch_and_start(version: str, reboots: bool) -> None:
     try:
         stop_old()
     except UpdateError:
-        shutil.rmtree(STAGE_DIR, ignore_errors=True)
+        drop_stage()
         raise
 
     try:
         switch()
     except Exception as e:
-        shutil.rmtree(STAGE_DIR, ignore_errors=True)
+        drop_stage()
         if service(app_script(), "restart") == 0 and started():
             raise UpdateError(f"could not put the new version in place; the previous version was started again: {e}")
         raise UpdateError(
             f"could not put the new version in place ({e}), and the previous version did not start "
             "again either. Recover as described in FORK.md"
         )
+    remove_stage_mark()
     os.sync()
 
     if reboots:
@@ -494,10 +514,15 @@ def run(args) -> str:
 
 
 def run_locked(args, work: str) -> str:
-    if not args.dry_run and os.path.exists(STAGE_DIR):
-        # Left by a run that stopped before the switch. Keep it if the switch itself was cut short.
+    if not args.dry_run and os.path.lexists(STAGE_DIR):
+        # Left by a run that stopped before the switch. Keep it if the switch itself was cut short,
+        # and never touch a /kvmapp.new this script did not create.
         check_not_interrupted()
+        if (not os.path.exists(STAGE_MARK) or os.path.islink(STAGE_DIR) or os.path.ismount(STAGE_DIR)
+                or (args.file and os.path.realpath(args.file).startswith(os.path.realpath(STAGE_DIR) + os.sep))):
+            raise UpdateError(f"{STAGE_DIR} exists and was not left by this updater; move it away first")
         shutil.rmtree(STAGE_DIR)
+        os.remove(STAGE_MARK)
     if args.file:
         if not args.sha512:
             raise UpdateError("--file requires --sha512")

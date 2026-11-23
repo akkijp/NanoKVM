@@ -35,7 +35,7 @@
 
 ビルドは家の Proxmox の VM `nkbuild`（pvexf・VMID 214）で行う。リリース用の成果物は下の「リリース」の `scripts/fork-release.sh` で作る（中で `make release` を呼ぶ。画面のビルドも固定した Node コンテナで行う）。
 
-成果物は `build/release/` の `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` の 3 つ。`scripts/verify-release-assets.sh build/release 2.5.4.1` で確かめる。
+成果物は `build/release/` の `nanokvm_2.5.4.1.tar.gz`・`latest.json`・`sha256.txt` の 3 つ。`scripts/fork-release.sh` が置いた `~/releases/2.5.4.1/` を、公開する前に `scripts/verify-release-assets.sh "$HOME/releases/2.5.4.1" 2.5.4.1` で確かめる（fork-release.sh も最後に同じ検査をしている）。
 ビルド環境は linux/amd64 だけ（ツールチェーンが x86-64 用のため）。
 
 テストは `scripts/fork-test.sh`（docker が要る。nkbuild で回す）。

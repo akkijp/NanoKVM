@@ -49,6 +49,8 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
         write_script(pathlib.Path(self.u.STOP_SCRIPT), b"#!/bin/sh\nexit 0\n")
         self.u.STAGE_DIR = str(self.base / "root/kvmapp.new")
+        self.u.STAGE_MARK = str(self.base / "root/kvmapp.new.update-nanokvm")
+        self.u.SERVICE_LOG = str(self.base / "root/.kvm-update/service.log")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
         self.real_migration_reboots = self.u.migration_reboots
@@ -115,7 +117,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.assert_unchanged()
 
     def assert_no_work_dirs(self):
-        self.assertEqual(os.listdir(self.u.WORK_PARENT), [])
+        self.assertEqual([n for n in os.listdir(self.u.WORK_PARENT) if n.startswith("run-")], [])
 
     # --- local file -----------------------------------------------------------
 
@@ -249,10 +251,41 @@ class UpdateScriptTest(unittest.TestCase):
         stage = pathlib.Path(self.u.STAGE_DIR)
         stage.mkdir()
         (stage / "leftover").write_text("x")
+        pathlib.Path(self.u.STAGE_MARK).write_text("")
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
         self.assertEqual(self.installed_version(), "2.5.4.1")
         self.assertFalse(stage.exists())
+        self.assertFalse(os.path.exists(self.u.STAGE_MARK))
+
+    def test_foreign_stage_is_not_removed(self):
+        stage = pathlib.Path(self.u.STAGE_DIR)
+        stage.mkdir()
+        (stage / "keep").write_text("x")  # not made by the updater: no mark
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("not left by this updater", file=path, sha512=digest)
+        self.assertTrue((stage / "keep").exists())
+
+    def test_input_inside_stage_is_not_removed(self):
+        stage = pathlib.Path(self.u.STAGE_DIR)
+        stage.mkdir()
+        pathlib.Path(self.u.STAGE_MARK).write_text("")
+        path, digest = self.package("2.5.4.1", name="root/kvmapp.new/nanokvm_2.5.4.1.tar.gz")
+        self.assert_rejected("not left by this updater", file=path, sha512=digest)
+        self.assertTrue(pathlib.Path(path).exists())
+
+    def test_init_script_output_goes_to_the_log_not_the_terminal(self):
+        write_script(pathlib.Path(self.u.STOP_SCRIPT), b"#!/bin/sh\necho stopping-OK\n")
+        path, digest = self.package("2.5.4.1")
+        saved = os.dup(1)
+        os.close(1)  # the SSH session is gone
+        try:
+            self.run_update(file=path, sha512=digest)
+        finally:
+            os.dup2(saved, 1)
+            os.close(saved)
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+        self.assertIn("stopping-OK", pathlib.Path(self.u.SERVICE_LOG).read_text())
 
     def test_stale_stage_is_kept_after_interrupted_switch(self):
         stage, app, old = pathlib.Path(self.u.STAGE_DIR), pathlib.Path(self.u.APP_DIR), pathlib.Path(self.u.BACKUP_DIR)
@@ -647,16 +680,46 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual((self.base / "drv0/unbind").read_text(), "")
         self.assertEqual(status, "on")
 
-    def test_start_and_restart_both_run_the_boot_steps(self):
-        start_services = s95_function("start_services")
-        first_lines = start_services.splitlines()[1:6]
-        self.assertTrue(any("disable_audio_capture" in line for line in first_lines))
-        self.assertTrue(any("disable_picoclaw" in line for line in first_lines))
+    def run_s95(self, action):
+        """Run the real S95nanokvm branch with everything that touches the device stubbed out,
+        recording the order of the fork's boot steps and the daemon starts."""
+        log = self.base / "order.log"
         text = S95.read_text()
-        for action in ("start)", "restart)"):
-            branch = text[text.index(f"  {action}"):]
-            branch = branch[:branch.index(";;")]
-            self.assertIn("start_services", branch, action)
+        text = text.replace("exec 9>/run/nanokvm-service.lock || exit 1", "exec 9>/dev/null")
+        text = text.replace("flock -n 9 ||", "true ||")
+        text = text.replace("/tmp/kvm_system/kvm_system 9>&- &", "record daemon-kvm_system")
+        text = text.replace("/tmp/server/NanoKVM-Server 9>&- &", "record daemon-NanoKVM-Server")
+        stubs = f"""
+record() {{ echo "$1" >> {log}; }}
+disable_audio_capture() {{ record mic; }}
+disable_picoclaw() {{ record picoclaw; }}
+pidof() {{ return 1; }}
+killall() {{ :; }}
+iptables() {{ return 0; }}
+rm() {{ :; }}
+cp() {{ :; }}
+mv() {{ :; }}
+awk() {{ :; }}
+sync() {{ :; }}
+reboot() {{ record reboot; }}
+"""
+        head, case = text.split('case "$1" in', 1)
+        script = head + stubs + 'case "$1" in' + case
+        # Redirections to device paths fail harmlessly off the device; silence them.
+        subprocess.run(["sh", "-c", script, "S95nanokvm", action], capture_output=True, text=True)
+        return log.read_text().split() if log.exists() else []
+
+    def test_start_and_restart_both_run_the_boot_steps_before_the_daemons(self):
+        for action in ("start", "restart"):
+            with self.subTest(action=action):
+                (self.base / "order.log").unlink(missing_ok=True)
+                order = self.run_s95(action)
+                self.assertIn("mic", order)
+                self.assertIn("picoclaw", order)
+                self.assertIn("daemon-NanoKVM-Server", order)
+                first_daemon = min(order.index("daemon-kvm_system"), order.index("daemon-NanoKVM-Server"))
+                self.assertLess(order.index("mic"), first_daemon)
+                self.assertLess(order.index("picoclaw"), first_daemon)
 
 
 if __name__ == "__main__":

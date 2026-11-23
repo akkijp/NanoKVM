@@ -50,8 +50,8 @@ jwt:
    refreshTokenDuration: 2678400    # The token refresh duration threshold in seconds before forcing a re-login. Default is `2678400` (~31 days)
    revokeTokensOnLogout: true       # Whether logout invalidates all sessions belonging to that user. Other users are never logged out. Setting this to false only clears the browser cookie and is not recommended. Default is `true`
 security:
-   loginLockoutDuration: 0,         # The duration (in seconds) to ban an IP from attempting to log in again after reaching the failure limit. If set to `0` or left empty, brute-force protection is disabled. Default is `0`
-   loginMaxFailures:     5,         # The maximum number of continuous failed login attempts allowed per IP before triggering protection. Default is `5`
+   loginLockoutDuration: 900,       # The duration (in seconds) to ban an IP from attempting to log in again after reaching the failure limit. akkijp fork: protection is always on; `0`, a negative value or leaving it empty uses the default `900`
+   loginMaxFailures:     5,         # The maximum number of continuous failed login attempts allowed per IP before triggering protection. Default is `5` (also used for `0` or a negative value)
 
 
 # WebRTC Traversal Settings

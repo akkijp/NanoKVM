@@ -19,9 +19,10 @@ The format is not arbitrary — it is fixed by the on-device updater in
 - **One safe root directory.** The updater scans before extracting and accepts
   only directories and regular files under `nanokvm_<version>/`; links,
   special files, duplicate paths, and path traversal are rejected.
-- **`name` is the file name.** `version.go` builds the download URL as
-  `<base>/<name>`, where `<base>` is `https://cdn.sipeed.com/nanokvm` (or
-  `.../preview` when `/etc/kvm/preview_updates` exists).
+- **`name` is the file name.** In the akkijp fork, `version.go` reads
+  `latest.json` from `https://github.com/akkijp/NanoKVM/releases/latest/download`
+  and downloads the package from
+  `https://github.com/akkijp/NanoKVM/releases/download/<version>/<name>`.
 - **`sha512` is base64, not hex.** `update.go` compares against
   `base64(raw sha512 digest)`. A hex digest will fail verification on device.
 - **`/kvmapp/version`** is what the device reports as its installed version, so
@@ -37,7 +38,7 @@ update servers.
 
 ## Building a release
 
-The frontend needs Node and pnpm on the host; everything riscv64 needs the
+The frontend is built in a pinned node container (`make web`); everything riscv64 needs the
 builder image (see `docker/Dockerfile`).
 
 ```bash
@@ -52,24 +53,16 @@ make web                   # web/dist
 make package VERSION=2.4.4 # build/release/{nanokvm_2.4.4.tar.gz,latest.json}
 ```
 
-In CI this runs as the **NanoKVM Package** workflow. Pull requests and manual
-runs only create Actions artifacts. For a public release, run **NanoKVM Create
-Tag**, then run **NanoKVM Release** and choose prerelease, stable, or promotion.
-Publishing attaches three assets:
-
-Publishing is one-shot: an existing Release or draft is an error, and only a
-published prerelease can be promoted.
+In the akkijp fork there are no Actions workflows and nothing is uploaded to the
+upstream CDN. Releases are built with `scripts/fork-release.sh <version>` on the
+build VM and published to the fork's GitHub Releases with three assets:
 
 - `nanokvm_<version>.tar.gz`
 - `latest.json`
 - `sha256.txt`
 
-The Actions artifact also includes `BUILD_INFO.txt` with the source commit,
-workflow run, immutable builder image digest, and both checksum encodings; that
-provenance file is not attached to the GitHub release. Uploading the tarball and
-`latest.json` to the CDN is what actually offers the update to devices in the
-field, so that step stays manual. `sha256.txt` is only for users verifying a
-manual download and does not change the on-device `latest.json` contract.
+Devices read `latest.json` from the latest GitHub release. The full procedure
+is in [FORK.md](../FORK.md).
 
 ## Where each file in the package comes from
 

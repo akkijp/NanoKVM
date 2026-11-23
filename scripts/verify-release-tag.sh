@@ -39,6 +39,10 @@ BRANCH="akki/${TAG%.*}"
 # Fetch into a ref of this run only; FETCH_HEAD is shared with any other fetch.
 VERIFY_REF="refs/fork-verify/$$-$RANDOM"
 trap 'git update-ref -d "$VERIFY_REF" 2>/dev/null || true' EXIT
+if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+    # The ancestry check needs the full history of the branch.
+    git fetch -q --no-tags --unshallow origin
+fi
 git fetch -q --no-tags origin "+refs/heads/$BRANCH:$VERIFY_REF"
 BRANCH_SHA="$(git rev-parse --verify "$VERIFY_REF^{commit}")"
 if ! git merge-base --is-ancestor "$SOURCE_SHA" "$BRANCH_SHA"; then
