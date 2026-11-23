@@ -35,10 +35,12 @@ const (
 	maxLatestJSONSize = 64 * 1024
 )
 
+// akkijp fork: every part of a version is 1-9 digits (so a version is at most 39 characters), the
+// same rule as scripts/package.sh, kvmapp/system/update-nanokvm.py and web/src/lib/version.ts.
 var (
 	latestClient       = utils.NewUpdateHTTPClient(15 * time.Second)
-	packageNamePattern = regexp.MustCompile(`^nanokvm_[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?\.tar\.gz$`)
-	versionPattern     = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+	packageNamePattern = regexp.MustCompile(`^nanokvm_[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:\.[0-9]{1,9})?\.tar\.gz$`)
+	versionPattern     = regexp.MustCompile(`^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(?:\.[0-9]{1,9})?(?:-[0-9A-Za-z.-]{1,32})?(?:\+[0-9A-Za-z.-]{1,32})?$`)
 )
 
 func (s *Service) GetVersion(c *gin.Context) {

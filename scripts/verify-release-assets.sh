@@ -10,7 +10,7 @@ if [ -z "$ASSET_DIR" ] || [ -z "$VERSION" ]; then
     echo "Usage: $0 <asset-directory> <version>" >&2
     exit 1
 fi
-if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+if ! echo "$VERSION" | grep -qE '^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(\.[0-9]{1,9})?$'; then
     echo "[ERROR] invalid version '$VERSION', expected MAJOR.MINOR.PATCH[.N]" >&2
     exit 1
 fi

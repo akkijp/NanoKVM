@@ -9,7 +9,7 @@ over the air: `nanokvm_<version>.tar.gz` plus its `latest.json` manifest.
 | `package.sh` | Stages the package tree, creates the tarball, and writes `latest.json`. |
 | `compare-release.sh` | Diffs a freshly built package against the currently published one. Informational. |
 | `verify-release-assets.sh` | Checks the three GitHub Release assets before publishing or promotion. |
-| `verify-release-tag.sh` | Requires an annotated numeric tag whose commit is on `main`. |
+| `verify-release-tag.sh` | Requires an annotated `X.Y.Z.N` tag whose commit is on the fork branch for its upstream version (`2.5.4.1` must be on `akki/2.5.4`; see [FORK.md](../FORK.md)). |
 
 ## What the updater expects
 

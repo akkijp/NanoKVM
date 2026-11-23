@@ -572,3 +572,20 @@ func TestSwitchingDuringARunningUpdateIsReportedAsUpdating(t *testing.T) {
 		t.Fatalf("version during a maintenance update: %s", body)
 	}
 }
+
+func TestVersionPartsAreOneToNineDigits(t *testing.T) {
+	longest := "999999999.999999999.999999999.999999999"
+	latest := validLatest()
+	latest.Version, latest.Name = longest, "nanokvm_"+longest+".tar.gz"
+	if err := validateLatest(&latest); err != nil {
+		t.Fatalf("longest allowed version rejected: %v", err)
+	}
+	if err := validateFilename(latest.Name); err != nil {
+		t.Fatalf("longest allowed package name rejected: %v", err)
+	}
+	tooLong := "1234567890.0.0.1"
+	latest.Version, latest.Name = tooLong, "nanokvm_"+tooLong+".tar.gz"
+	if err := validateLatest(&latest); err == nil {
+		t.Fatal("a 10-digit part must be rejected")
+	}
+}

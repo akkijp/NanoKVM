@@ -70,7 +70,8 @@ export function versionStatus(current: string, latest: string): VersionStatus {
 
 // Offline update packages: nanokvm_X.Y.Z.tar.gz or nanokvm_X.Y.Z.N.tar.gz.
 // Must match packageNamePattern in server/service/application/version.go.
-export const PACKAGE_NAME_RE = /^nanokvm_\d+\.\d+\.\d+(?:\.\d+)?\.tar\.gz$/;
+// Every part 1-9 digits: the same rule as the server and scripts/package.sh.
+export const PACKAGE_NAME_RE = /^nanokvm_\d{1,9}\.\d{1,9}\.\d{1,9}(?:\.\d{1,9})?\.tar\.gz$/;
 
 export function isValidPackageName(filename: string): boolean {
   return PACKAGE_NAME_RE.test(filename);

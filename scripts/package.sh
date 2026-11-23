@@ -34,7 +34,7 @@ fi
 
 # The updater rejects file names outside [a-zA-Z0-9._-] (update_offline.go),
 # and the version string ends up in the file name, so validate it up front.
-if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+if ! echo "$VERSION" | grep -qE '^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(\.[0-9]{1,9})?$'; then
     echo "[ERROR] invalid version '$VERSION', expected MAJOR.MINOR.PATCH[.N]" >&2
     exit 1
 fi

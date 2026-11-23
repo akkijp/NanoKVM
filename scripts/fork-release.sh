@@ -17,7 +17,7 @@
 set -euo pipefail
 
 VERSION="${1:-}"
-if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+if ! echo "$VERSION" | grep -qE '^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$'; then
     echo "Usage: $0 <version, e.g. 2.5.4.1>" >&2
     exit 1
 fi

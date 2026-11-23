@@ -568,7 +568,7 @@ class UpdateScriptTest(unittest.TestCase):
         real_write = os.write
 
         def failing_write(fd, data):
-            if b"switching" in data:
+            if b"switching" in bytes(data):
                 raise OSError("no space left on device")
             return real_write(fd, data)
 
@@ -624,12 +624,69 @@ class UpdateScriptTest(unittest.TestCase):
         self.run_update(file=path, sha512=digest)
         self.assertEqual(seen[0], ("switching", False))
 
+    def test_cut_short_backup_removal_does_not_block_the_next_update(self):
+        self.complete_app(self.u.BACKUP_DIR)
+        real_rmtree = shutil.rmtree
+        state = {"cut": True}
+
+        def rmtree(path, *a, **kw):
+            if state["cut"] and path.endswith(".removing"):
+                state["cut"] = False
+                os.remove(os.path.join(path, "version"))  # part of it is gone, then power is lost
+                raise OSError("power lost")
+            real_rmtree(path, *a, **kw)
+
+        self.u.shutil = types.SimpleNamespace(**{k: getattr(shutil, k) for k in dir(shutil) if not k.startswith("__")})
+        self.u.shutil.rmtree = rmtree
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaises(self.u.UpdateError):
+            self.run_update(file=path, sha512=digest)
+        self.assertFalse(os.path.exists(self.u.BACKUP_DIR))  # renamed away: never half-deleted
+        self.assertEqual(self.installed_version(), "2.4.3")
+        # The next run finishes the removal and installs.
+        self.assertEqual(self.run_update(file=path, sha512=digest), "2.5.4.1")
+        self.assertFalse(os.path.exists(self.u.BACKUP_DIR + ".removing"))
+
+    def test_short_writes_still_write_the_whole_record(self):
+        real_write = os.write
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.write = lambda fd, data: real_write(fd, bytes(data[:5]))  # 5 bytes at a time
+        self.u.os.path = os.path
+        self.u.set_restart_pending("installed", "2.4.3", "2.5.4.1")
+        self.assertEqual(json.loads(pathlib.Path(self.u.RESTART_PENDING).read_text())["phase"], "installed")
+
+    def test_short_write_then_failure_keeps_the_previous_record(self):
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.2", "to": "2.4.3", "phase": "installed"}\n')
+        real_write = os.write
+        calls = {"n": 0}
+
+        def write(fd, data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_write(fd, bytes(data[:10]))
+            raise OSError("no space left on device")
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.write, self.u.os.path = write, os.path
+        with self.assertRaises(OSError):
+            self.u.set_restart_pending("switching", "2.4.3", "2.5.4.1")
+        self.assertIn('"to": "2.4.3"', pathlib.Path(self.u.RESTART_PENDING).read_text())
+
+    def test_longest_allowed_version_installs_and_reads_back(self):
+        longest = "999999999.999999999.999999999.999999999"
+        path, digest = self.package(longest)
+        self.assertEqual(self.run_update(file=path, sha512=digest), longest)
+        self.assertEqual(self.u.read_previous_version(), longest)
+        too_long = "1234567890.0.0.1"
+        path, digest = self.package(too_long)
+        self.assert_rejected_keeping("must be named", file=path, sha512=digest)
+
     def test_failed_backup_removal_records_nothing(self):
         self.complete_app(self.u.BACKUP_DIR)
         real_rmtree = shutil.rmtree
 
         def rmtree(path, *a, **kw):
-            if path == self.u.BACKUP_DIR:
+            if path.startswith(self.u.BACKUP_DIR):
                 raise OSError("I/O error")
             real_rmtree(path, *a, **kw)
 
@@ -779,7 +836,7 @@ class UpdateScriptTest(unittest.TestCase):
         real_rmtree = self.u.shutil.rmtree
 
         def rmtree(path, *a, **kw):
-            if path == self.u.BACKUP_DIR:
+            if path.startswith(self.u.BACKUP_DIR):  # /root/old is renamed to /root/old.removing first
                 raise OSError("read-only")
             real_rmtree(path, *a, **kw)
 

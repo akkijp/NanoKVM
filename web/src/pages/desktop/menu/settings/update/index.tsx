@@ -25,6 +25,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // While watching an update or a restart, a failed request (the server restarting) is retried
   // until this time instead of ending in "failed".
   const watchUntilRef = useRef(0);
+  const reloadWhenSettledRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -56,7 +57,13 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
         // the restart; if it stopped half-way, only manual recovery is safe.
         setMicrophone(rsp.data.microphone || '');
-        if (!rsp.data.restartPending) watchUntilRef.current = 0; // settled
+        if (!rsp.data.restartPending) {
+          watchUntilRef.current = 0; // settled
+          if (reloadWhenSettledRef.current) {
+            window.location.reload();
+            return;
+          }
+        }
         if (rsp.data.restartPending) {
           setLatestVersion(rsp.data.pendingVersion || '');
           if (rsp.data.restartPhase === 'confirming' || rsp.data.restartPhase === 'updating') {
@@ -136,11 +143,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           checkForUpdates();
           return;
         }
-        setTimeout(() => {
-          setIsLocked(false);
-          setErrMsg('');
-          window.location.reload();
-        }, 12000);
+        // Restarting (maybe rebooting): watch the version API until the device answers again and
+        // the restart has settled, then reload; never reload into a page that cannot load.
+        reloadWhenSettledRef.current = true;
+        watchUntilRef.current = Date.now() + 10 * 60 * 1000;
+        scheduleRecheck();
       })
       .catch((error: unknown) => {
         refused(error instanceof Error ? error.message : t('settings.update.updateFailed'));

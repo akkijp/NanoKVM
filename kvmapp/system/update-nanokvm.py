@@ -84,7 +84,9 @@ MAX_MANIFEST_SIZE = 64 << 10
 MIN_FREE_RESERVE = 128 << 20
 FREE_RESERVE_PERCENT = 5
 
-VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$")
+# Every part 1-9 digits (at most 39 characters): the same rule as scripts/package.sh and the
+# server (version.go), so whatever can be built can be installed and read back later.
+VERSION_RE = re.compile(r"^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(\.[0-9]{1,9})?$")
 REQUIRED_FILES = (
     "version",
     "server/NanoKVM-Server",
@@ -282,7 +284,7 @@ def copy_limited(source: str, dest: str, limit: int) -> None:
 
 
 def version_from_name(path: str) -> str:
-    m = re.fullmatch(r"nanokvm_([0-9.]+)\.tar\.gz", os.path.basename(path))
+    m = re.fullmatch(r"nanokvm_([0-9.]{1,64})\.tar\.gz", os.path.basename(path))
     if not m or not VERSION_RE.match(m.group(1)):
         raise UpdateError("package file must be named nanokvm_<version>.tar.gz")
     return m.group(1)
@@ -629,6 +631,16 @@ def read_pending():
     return record
 
 
+def write_all(fd: int, data: bytes) -> None:
+    """os.write may write less than asked (e.g. a nearly full disk); keep going or fail."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write")
+        view = view[written:]
+
+
 def set_restart_pending(phase: str, old: str, new: str) -> None:
     """Record, durably and atomically, that /kvmapp holds (or is about to hold) a version not yet
     seen running: a temporary file is written in full and synced, renamed over the record, and
@@ -639,7 +651,7 @@ def set_restart_pending(phase: str, old: str, new: str) -> None:
     try:
         try:
             os.fchmod(fd, 0o644)
-            os.write(fd, (json.dumps({"from": old, "to": new, "phase": phase}) + "\n").encode())
+            write_all(fd, (json.dumps({"from": old, "to": new, "phase": phase}) + "\n").encode())
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -663,6 +675,22 @@ def clear_restart_pending() -> None:
         os.remove(RESTART_PENDING)
     except FileNotFoundError:
         pass
+
+
+def backup_trash() -> str:
+    return BACKUP_DIR + ".removing"
+
+
+def remove_previous_backup() -> None:
+    """Rename /root/old away (atomic) before deleting it, so a deletion cut short never leaves a
+    half-deleted /root/old that looks like a half-moved backup. A leftover is finished next time."""
+    trash = backup_trash()
+    if os.path.lexists(BACKUP_DIR):
+        if os.path.lexists(trash):
+            shutil.rmtree(trash)
+        os.rename(BACKUP_DIR, trash)
+    if os.path.lexists(trash):
+        shutil.rmtree(trash)
 
 
 def switch() -> None:
@@ -722,7 +750,7 @@ def read_previous_version() -> str:
             value = f.read().decode("utf-8").strip()
     except (OSError, UnicodeDecodeError) as e:
         raise UpdateError(f"cannot read {APP_DIR}/version ({e}); nothing was changed")
-    if not value or "\n" in value or len(value) > 64:
+    if not value or "\n" in value or len(value) > 64:  # generous: upstream versions may carry suffixes
         raise UpdateError(f"{APP_DIR}/version is not a version; nothing was changed")
     return value
 
@@ -764,8 +792,7 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     # The previous backup goes first, with nothing recorded yet: if this is cut short, /kvmapp is
     # still whole and the next boot starts it normally.
     try:
-        if os.path.exists(BACKUP_DIR):
-            shutil.rmtree(BACKUP_DIR)
+        remove_previous_backup()
     except OSError as e:
         drop_stage()
         outcome = restart_previous(STOP_SCRIPT)
@@ -890,6 +917,9 @@ def run(args) -> str:
 
 
 def run_locked(args, work: str) -> str:
+    if not args.dry_run and os.path.lexists(backup_trash()):
+        check_removable(backup_trash())
+        shutil.rmtree(backup_trash())  # an earlier removal of the previous backup was cut short
     if not args.dry_run and os.path.lexists(STAGE_DIR):
         # Left by a run that stopped before the switch. Keep it if the switch itself was cut short,
         # and never touch a /kvmapp.new this script did not create.

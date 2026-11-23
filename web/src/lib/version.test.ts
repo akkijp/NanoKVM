@@ -46,3 +46,8 @@ test('offline package names', () => {
     assert.ok(!isValidPackageName(bad), bad);
   }
 });
+
+test('package names follow the 1-9 digit rule', () => {
+  assert.equal(isValidPackageName('nanokvm_999999999.999999999.999999999.999999999.tar.gz'), true);
+  assert.equal(isValidPackageName('nanokvm_1234567890.0.0.1.tar.gz'), false);
+});
