@@ -182,8 +182,8 @@ func TestFailedRestartReleasesUpdateLock(t *testing.T) {
 	}
 }
 
-func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+func usePendingTestPaths(t *testing.T) string {
+	t.Helper()
 	oldPath, oldCmd, oldDelay, oldPending := updateLockPath, restartCommand, restartDelay, restartPendingPath
 	dir := t.TempDir()
 	updateLockPath = filepath.Join(dir, "update.lock")
@@ -194,53 +194,77 @@ func TestFailedRestartBlocksNewInstallsAndRetriesOnlyTheRestart(t *testing.T) {
 		releaseUpdateLock()
 		updateLockPath, restartCommand, restartDelay, restartPendingPath = oldPath, oldCmd, oldDelay, oldPending
 	})
+	return dir
+}
 
-	// An update switched /kvmapp (recorded first), then the restart failed.
-	if err := setRestartPending(true); err != nil {
-		t.Fatal(err)
-	}
-	if !acquireUpdateLock() {
-		t.Fatal("could not take the update lock")
-	}
-	restartServices()
-	if !isRestartPending() {
-		t.Fatal("a failed restart must leave the record in place")
-	}
-
-	// The version query tells the UI.
+func call(handler func(*Service, *gin.Context), method, path string) string {
+	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/application/version", nil)
-	(&Service{}).GetVersion(c)
-	if !strings.Contains(w.Body.String(), `"restartPending":true`) {
-		t.Fatalf("version during a pending restart: %s", w.Body.String())
+	c.Request = httptest.NewRequest(method, path, nil)
+	handler(&Service{}, c)
+	return w.Body.String()
+}
+
+func TestPendingUpdateBlocksInstallsAndOnlyTheRestartIsRetried(t *testing.T) {
+	dir := usePendingTestPaths(t)
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
 	}
 
-	// An online update request retries the restart, installs nothing, and reports success.
+	if body := call((*Service).GetVersion, http.MethodGet, "/api/application/version"); !strings.Contains(body, `"restartPending":true`) || !strings.Contains(body, `"restartPhase":"installed"`) {
+		t.Fatalf("version: %s", body)
+	}
+	for _, handler := range []func(*Service, *gin.Context){(*Service).Update, (*Service).OfflineUpdate} {
+		if body := call(handler, http.MethodPost, "/api/application/update"); !strings.Contains(body, "nothing was installed") {
+			t.Fatalf("update while pending: %s", body)
+		}
+		waitFor(t, func() bool { ok := acquireUpdateLock(); releaseUpdateLock(); return ok })
+	}
+
 	marker := filepath.Join(dir, "restarted")
-	restartCommand = []string{"sh", "-c", "touch " + marker + "; exit 1"} // still failing, so the lock is released
-	w = httptest.NewRecorder()
-	c, _ = gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update", nil)
-	(&Service{}).Update(c)
-	if !strings.Contains(w.Body.String(), `"code":0`) || !strings.Contains(w.Body.String(), "restartRetry") {
-		t.Fatalf("update during a pending restart: %s", w.Body.String())
+	restartCommand = []string{"sh", "-c", "touch " + marker + "; exit 1"} // fails, so the lock is released
+	if body := call((*Service).RetryRestart, http.MethodPost, "/api/application/update/restart"); !strings.Contains(body, `"restarting":true`) {
+		t.Fatalf("retry: %s", body)
 	}
 	waitFor(t, func() bool {
 		_, err := os.Stat(marker)
-		return err == nil && acquireUpdateLock()
+		if err != nil {
+			return false
+		}
+		ok := acquireUpdateLock()
+		releaseUpdateLock()
+		return ok
 	})
-
-	// An offline update says the uploaded file was not applied.
-	w = httptest.NewRecorder()
-	c, _ = gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update/offline", nil)
-	releaseUpdateLock()
-	(&Service{}).OfflineUpdate(c)
-	if !strings.Contains(w.Body.String(), "was not applied") {
-		t.Fatalf("offline update during a pending restart: %s", w.Body.String())
+	if !isRestartPending() {
+		t.Fatal("a failed restart keeps the record")
 	}
-	waitFor(t, acquireUpdateLock)
+}
+
+func TestRetryRestartDoesNothingHalfWayOrWithoutARecord(t *testing.T) {
+	dir := usePendingTestPaths(t)
+	marker := filepath.Join(dir, "restarted")
+	restartCommand = []string{"touch", marker}
+
+	if body := call((*Service).RetryRestart, http.MethodPost, "/api/application/update/restart"); !strings.Contains(body, `"restarting":false`) {
+		t.Fatalf("retry without a record: %s", body)
+	}
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseSwitching}); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).RetryRestart, http.MethodPost, "/api/application/update/restart"); !strings.Contains(body, "FORK.md") {
+		t.Fatalf("retry half-way: %s", body)
+	}
+	if err := os.WriteFile(restartPendingPath, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := call((*Service).RetryRestart, http.MethodPost, "/api/application/update/restart"); !strings.Contains(body, "FORK.md") {
+		t.Fatalf("retry with an unreadable record: %s", body)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the app was restarted although /kvmapp may be incomplete")
+	}
 }
 
 func waitFor(t *testing.T, ok func() bool) {

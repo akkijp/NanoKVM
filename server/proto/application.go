@@ -3,8 +3,10 @@ package proto
 type GetVersionRsp struct {
 	Current string `json:"current"`
 	Latest  string `json:"latest"`
-	// akkijp fork: an installed update waits for its restart.
-	RestartPending bool `json:"restartPending,omitempty"`
+	// akkijp fork: an update has not been seen running yet (see application/pending.go).
+	RestartPending bool   `json:"restartPending,omitempty"`
+	RestartPhase   string `json:"restartPhase,omitempty"`
+	PendingVersion string `json:"pendingVersion,omitempty"`
 }
 
 type GetPreviewRsp struct {

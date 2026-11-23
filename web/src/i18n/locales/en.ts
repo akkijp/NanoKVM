@@ -657,6 +657,8 @@ const en = {
         queryFailed: 'Get version failed',
         restartPending: 'This version is installed but the device has not restarted into it yet.',
         retryRestart: 'Retry the restart',
+        switchIncomplete:
+          'An earlier update stopped while replacing the app. Restarting is not safe; recover as described in FORK.md.',
         updateFailed: 'Update failed. Please retry.',
         isLatest: 'You already have the latest version.',
         available: 'An update is available. Are you sure you want to update now?',

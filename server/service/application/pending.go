@@ -1,0 +1,135 @@
+package application
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+
+	"NanoKVM-Server/proto"
+
+	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+)
+
+// akkijp fork: the record of an update that has not been seen running yet.
+//
+// It is written (and synced) before /kvmapp is touched and kept until the new version has been
+// seen running: S95nanokvm removes it once both daemons have stayed up, and
+// kvmapp/system/update-nanokvm.py removes it once it sees the version it started, or the
+// previous version, running again. While it exists /root/old is the only version known to work,
+// so neither this server nor update-nanokvm.py installs anything.
+//
+//	phase "switching": /kvmapp is being replaced; its contents may be half old, half new.
+//	                   Restarting would run whatever is there, so only manual recovery (FORK.md).
+//	phase "installed": the new version is complete in /kvmapp; only the restart is missing,
+//	                   which POST /api/application/update/restart retries.
+//
+// It lives on disk so that a reboot or a killed process does not lose it. The same file and
+// format are used by kvmapp/system/update-nanokvm.py.
+var restartPendingPath = "/etc/kvm/update-restart-pending"
+
+const (
+	phaseSwitching = "switching"
+	phaseInstalled = "installed"
+)
+
+type pendingRecord struct {
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Phase string `json:"phase"`
+}
+
+// readPending reports the record, if any. An unreadable record counts as "switching": the state
+// of /kvmapp is then unknown, and that is the case that must not be restarted blindly.
+func readPending() (pendingRecord, bool) {
+	data, err := os.ReadFile(restartPendingPath)
+	if os.IsNotExist(err) {
+		return pendingRecord{}, false
+	}
+	var record pendingRecord
+	if err != nil || json.Unmarshal(data, &record) != nil || record.Phase != phaseInstalled {
+		record.Phase = phaseSwitching
+	}
+	return record, true
+}
+
+func isRestartPending() bool {
+	_, pending := readPending()
+	return pending
+}
+
+func writePending(record pendingRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(restartPendingPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("record the pending restart: %w", err)
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("record the pending restart: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("record the pending restart: %w", err)
+	}
+	return file.Close()
+}
+
+func clearPending() error {
+	if err := os.Remove(restartPendingPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func readVersionFile(dir string) string {
+	data, err := os.ReadFile(dir + "/version")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// refuseWhilePending answers an update request while an earlier update is unfinished: nothing is
+// installed, and the response says how to finish it. It reports whether it answered.
+func refuseWhilePending(c *gin.Context) bool {
+	record, pending := readPending()
+	if !pending {
+		return false
+	}
+	var rsp proto.Response
+	if record.Phase == phaseInstalled {
+		rsp.ErrRsp(c, -3, fmt.Sprintf("version %s is installed but not running yet; retry the restart first (nothing was installed)", record.To))
+	} else {
+		rsp.ErrRsp(c, -3, "an earlier update stopped while replacing /kvmapp; recover as described in FORK.md (nothing was installed)")
+	}
+	return true
+}
+
+// RetryRestart restarts into an installed update that is waiting for its restart. It does
+// nothing else: it installs nothing, and without a waiting update it just reports that.
+func (s *Service) RetryRestart(c *gin.Context) {
+	var rsp proto.Response
+
+	if !acquireUpdateLock() {
+		rsp.ErrRsp(c, -1, "update already in progress")
+		return
+	}
+	record, pending := readPending()
+	switch {
+	case !pending:
+		releaseUpdateLock()
+		rsp.OkRspWithData(c, gin.H{"restarting": false})
+	case record.Phase != phaseInstalled:
+		releaseUpdateLock()
+		rsp.ErrRsp(c, -3, "the earlier update stopped while replacing /kvmapp; restarting would run an incomplete app. Recover as described in FORK.md")
+	default:
+		log.Infof("retrying the restart into %s", record.To)
+		rsp.OkRspWithData(c, gin.H{"restarting": true})
+		go restartServices()
+	}
+}

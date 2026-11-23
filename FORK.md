@@ -67,6 +67,15 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 - 前回の更新が入れ替えの途中で止まっていた（`/kvmapp` が欠けている・`/root/old` が途中まで）ときは何もしない。`/kvmapp` 自体が無く、`/root/old` に `version`・`server/NanoKVM-Server`・`kvm_system/kvm_system` が揃っているときに限り、`mv /root/old /kvmapp` で前の版を戻して再起動してよい。それ以外（`/kvmapp` が残っている・`/root/old` が途中まで）は、下の microSD の書き直しで戻す
 - マイクを切れなかったときは、新しい版は動いたまま失敗（終了コード 1）として知らせる（`/run/nanokvm-microphone` に理由）
 
+### 「まだ動いたと確かめていない」記録（`/etc/kvm/update-restart-pending`）
+
+画面の更新も `update-nanokvm.py` も、`/kvmapp` を入れ替える前にこの記録を書く（`{"from": 前の版, "to": 新しい版, "phase": "switching"}`）。入れ替えが済んだら `"installed"` に書き換える。記録がある間は `/root/old` が「動いた実績のある版」なので、どちらの更新も何も入れない。
+
+- 新しい版の S95 は、2 つのデーモンが 15 秒動き続けたら記録を消す
+- `installed` のまま再起動に失敗したときは、画面の「再起動をやり直す」か `/kvmapp/system/init.d/S95nanokvm restart`
+- `switching` のまま止まったとき（入れ替えの途中で電源が落ちた等）は、再起動せずに下の手順で戻す
+- 前の版（`from`）か新しい版（`to`）が `/kvmapp` にそろって 2 つのデーモンが動いていれば、`update-nanokvm.py` が記録を消して先へ進む（上流の S95 で前の版が起動し直した場合など）
+
 自動では戻さない。戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。
 
 2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`（フォークの Releases から取る）で入る。

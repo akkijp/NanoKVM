@@ -57,6 +57,7 @@ class UpdateScriptTest(unittest.TestCase):
         pathlib.Path(self.u.MOUNTS).write_text("")
         self.u.stopped = lambda: True
         self.u.started = lambda: True
+        self.u.running = lambda name: False
         self.real_migration_reboots = self.u.migration_reboots
         self.u.migration_reboots = lambda: False
         self.u.check_same_filesystem = lambda: None
@@ -421,7 +422,7 @@ class UpdateScriptTest(unittest.TestCase):
 
     def test_web_update_waiting_for_restart_blocks_install(self):
         self.complete_app(self.u.BACKUP_DIR)  # the version known to work
-        pathlib.Path(self.u.RESTART_PENDING).write_text("")
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.2", "to": "2.4.3", "phase": "installed"}')
         path, digest = self.package("2.5.4.1")
         with self.assertRaisesRegex(self.u.UpdateError, "not been seen running"):
             self.run_update(file=path, sha512=digest)
@@ -439,6 +440,64 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
         self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "version").read_text().strip(), "2.4.3")
 
+    def test_record_written_half_way_asks_for_manual_recovery(self):
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.2", "to": "2.5.4.1", "phase": "switching"}')
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("stopped while replacing", file=path, sha512=digest)
+        pathlib.Path(self.u.RESTART_PENDING).write_text("not json")  # unknown state counts as half-way
+        self.assert_rejected("stopped while replacing", file=path, sha512=digest)
+
+    def test_record_is_cleared_when_the_previous_version_runs_again(self):
+        # Power was lost after the record was written; the upstream init script, which does not
+        # know the record, started the previous version again.
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "switching"}')
+        self.u.running = lambda name: True
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertEqual(self.installed_version(), "2.5.4.1")
+
+    def test_record_is_not_cleared_while_the_daemons_are_down(self):
+        pathlib.Path(self.u.RESTART_PENDING).write_text('{"from": "2.4.3", "to": "2.5.4.1", "phase": "installed"}')
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("not been seen running", file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
+
+    def test_record_phases_around_the_switch(self):
+        phases = []
+        real_switch = self.u.switch
+
+        def switch():
+            phases.append(json.loads(pathlib.Path(self.u.RESTART_PENDING).read_text()))
+            real_switch()
+
+        self.u.switch = switch
+        self.u.started = lambda: False
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaises(self.u.UpdateError):
+            self.run_update(file=path, sha512=digest)
+        self.assertEqual(phases, [{"from": "2.4.3", "to": "2.5.4.1", "phase": "switching"}])
+        after = json.loads(pathlib.Path(self.u.RESTART_PENDING).read_text())
+        self.assertEqual(after["phase"], "installed")
+
+    def test_failed_switch_restarts_even_if_the_record_cannot_be_removed(self):
+        real_rename, real_remove = os.rename, os.remove
+
+        def rename(src, dst):
+            if src == self.u.STAGE_DIR:
+                raise OSError("no space left")
+            real_rename(src, dst)
+
+        def remove(path, *a, **kw):
+            if path == self.u.RESTART_PENDING:
+                raise OSError("read-only file system")
+            real_remove(path, *a, **kw)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.rename, self.u.os.remove, self.u.os.path = rename, remove, os.path
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("could not be removed", file=path, sha512=digest)
+        self.assertTrue(self.calls().splitlines()[-1].endswith("S95nanokvm restart"))
+
     def test_success_clears_the_record(self):
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
@@ -447,7 +506,7 @@ class UpdateScriptTest(unittest.TestCase):
     def test_record_is_written_before_the_switch(self):
         seen = []
         real_switch = self.u.switch
-        self.u.switch = lambda: (seen.append(os.path.exists(self.u.RESTART_PENDING)), real_switch())
+        self.u.switch = lambda: (seen.append(os.path.exists(self.u.RESTART_PENDING)), real_switch())[1]
         path, digest = self.package("2.5.4.1")
         self.run_update(file=path, sha512=digest)
         self.assertEqual(seen, [True])

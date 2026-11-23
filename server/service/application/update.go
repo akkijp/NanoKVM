@@ -30,7 +30,8 @@ func (s *Service) Update(c *gin.Context) {
 		rsp.ErrRsp(c, -1, "update already in progress")
 		return
 	}
-	if retryPendingRestart(c, false) {
+	if refuseWhilePending(c) {
+		releaseUpdateLock()
 		return
 	}
 
@@ -49,41 +50,7 @@ func (s *Service) Update(c *gin.Context) {
 var (
 	restartCommand = []string{"/kvmapp/system/init.d/S95nanokvm", "restart"}
 	restartDelay   = 1 * time.Second
-
-	// akkijp fork: written (and synced) before /kvmapp is switched, kept until the new version has
-	// been seen running: S95nanokvm removes it once both daemons have stayed up. While it exists,
-	// /root/old is the only version known to work, so neither this server nor
-	// kvmapp/system/update-nanokvm.py installs anything; an update request only retries the
-	// restart. On disk, so a reboot or a killed process does not lose it.
-	restartPendingPath = "/etc/kvm/update-restart-pending"
 )
-
-func isRestartPending() bool {
-	_, err := os.Stat(restartPendingPath)
-	return err == nil
-}
-
-func setRestartPending(pending bool) error {
-	if !pending {
-		if err := os.Remove(restartPendingPath); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	file, err := os.OpenFile(restartPendingPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("record the pending restart: %w", err)
-	}
-	if _, err := file.WriteString("restart pending\n"); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("record the pending restart: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("record the pending restart: %w", err)
-	}
-	return file.Close()
-}
 
 func restartServices() {
 	// Let the HTTP response reach the client before stopping the server.
@@ -95,24 +62,6 @@ func restartServices() {
 		// maintenance updater, which shares the lock file) proceed; they retry the restart.
 		releaseUpdateLock()
 	}
-}
-
-// retryPendingRestart answers an update request while a previous update waits for its restart:
-// it retries only the restart and installs nothing. It reports whether it handled the request.
-func retryPendingRestart(c *gin.Context, offline bool) bool {
-	if !isRestartPending() {
-		return false
-	}
-	var rsp proto.Response
-	if offline {
-		// The uploaded file is not applied; say so.
-		rsp.ErrRsp(c, -2, "the selected file was not applied: the previous update is installed but not running yet; restarting it now, try again afterwards")
-	} else {
-		// The retry was accepted; the UI shows the restart like an update in progress.
-		rsp.OkRspWithData(c, gin.H{"restartRetry": true})
-	}
-	go restartServices()
-	return true
 }
 
 func update() error {

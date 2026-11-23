@@ -20,6 +20,14 @@ export function update() {
   });
 }
 
+// akkijp fork: restart into an installed update that is waiting for its restart (installs nothing)
+export function retryRestart() {
+  return http.request({
+    method: 'post',
+    url: '/api/application/update/restart'
+  });
+}
+
 // offline update application
 export function offlineUpdate(data: FormData, sha256Checksum = '') {
   const baseUrl = getBaseUrl('http');

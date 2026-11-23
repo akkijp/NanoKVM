@@ -56,8 +56,10 @@ func (s *Service) GetVersion(c *gin.Context) {
 
 	// akkijp fork: /kvmapp/version names an installed update that is not running yet. Tell the
 	// UI, which offers to retry the restart (an update request does only that while pending).
-	if isRestartPending() {
-		rsp.OkRspWithData(c, &proto.GetVersionRsp{Current: currentVersion, RestartPending: true})
+	if record, pending := readPending(); pending {
+		rsp.OkRspWithData(c, &proto.GetVersionRsp{
+			Current: currentVersion, RestartPending: true, RestartPhase: record.Phase, PendingVersion: record.To,
+		})
 		return
 	}
 

@@ -41,9 +41,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
         setCurrentVersion(rsp.data.current);
 
-        // akkijp fork: an installed update waits for its restart; offer to retry it.
+        // akkijp fork: an update has not been seen running yet. If it is complete, offer to retry
+        // the restart; if it stopped half-way, only manual recovery is safe.
         if (rsp.data.restartPending) {
-          setStatus('restartPending');
+          setLatestVersion(rsp.data.pendingVersion || '');
+          setStatus(rsp.data.restartPhase === 'installed' ? 'restartPending' : 'switchIncomplete');
           return;
         }
 
@@ -70,9 +72,31 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       });
   }
 
+  function retryRestart() {
+    if (status !== 'restartPending') return;
+
+    setIsLocked(true);
+    setStatus('updating');
+
+    api
+      .retryRestart()
+      .then((rsp: any) => {
+        if (rsp.code !== 0) {
+          setStatus('failed');
+          setErrMsg(rsp.msg || t('settings.update.updateFailed'));
+        }
+      })
+      .finally(() => {
+        setTimeout(() => {
+          setIsLocked(false);
+          setErrMsg('');
+          window.location.reload();
+        }, 12000);
+      });
+  }
+
   function update() {
-    // While a restart is pending the server retries only that restart.
-    if (status !== 'outdated' && status !== 'restartPending') return;
+    if (status !== 'outdated') return;
 
     setIsLocked(true);
     setStatus('updating');
@@ -140,14 +164,18 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         {status === 'restartPending' && (
           <Result
             status="warning"
-            title={currentVersion}
+            title={latestVersion || currentVersion}
             subTitle={t('settings.update.restartPending')}
             extra={[
-              <Button key="retry" type="primary" onClick={update}>
+              <Button key="retry" type="primary" onClick={retryRestart}>
                 {t('settings.update.retryRestart')}
               </Button>
             ]}
           />
+        )}
+
+        {status === 'switchIncomplete' && (
+          <Result status="error" title={currentVersion} subTitle={t('settings.update.switchIncomplete')} />
         )}
 
         {status === 'outdated' && (

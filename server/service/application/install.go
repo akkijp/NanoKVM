@@ -54,17 +54,18 @@ func releaseUpdateLock() {
 
 func installPreparedPackage(sourceDir string) error {
 	// akkijp fork: from here until the new version is seen running, /root/old is the version
-	// known to work. Record that before touching anything; no record, no switch.
-	if err := setRestartPending(true); err != nil {
+	// known to work. Record that before touching anything; no record, no switch (pending.go).
+	record := pendingRecord{From: readVersionFile(AppDir), To: readVersionFile(sourceDir), Phase: phaseSwitching}
+	if err := writePending(record); err != nil {
 		return err
 	}
 	if err := backupCurrentApp(); err != nil {
-		return err // the old app may be partly moved: keep the record
+		return err // the old app may be partly moved: keep the record as "switching"
 	}
 
 	if err := applyUpdate(sourceDir); err != nil {
-		if _, statErr := os.Stat(AppDir + "/version"); statErr == nil {
-			_ = setRestartPending(false) // the backup was put back; the old version is in place
+		if readVersionFile(AppDir) == record.From && record.From != "" {
+			_ = clearPending() // the backup was put back; the old version is in place
 		}
 		return err
 	}
@@ -73,6 +74,11 @@ func installPreparedPackage(sourceDir string) error {
 		return fmt.Errorf("failed to chmod: %w", err)
 	}
 
+	// Complete: only the restart is missing, which may now be retried.
+	record.Phase = phaseInstalled
+	if err := writePending(record); err != nil {
+		return err
+	}
 	return nil
 }
 

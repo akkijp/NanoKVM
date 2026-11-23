@@ -66,9 +66,10 @@ STAGE_MARK_NAME = ".staged-by-update-nanokvm"
 
 DAEMONS = ("NanoKVM-Server", "kvm_system")
 MIC_STATUS = "/run/nanokvm-microphone"  # written by S95nanokvm
-# Written before /kvmapp is switched (by this script and by the web updater) and removed by
-# S95nanokvm once the new version's daemons have stayed up. While it exists, /root/old is the
-# only version known to work.
+# Written before /kvmapp is switched (by this script and by the web updater) and removed once
+# the new version has been seen running (S95nanokvm, or this script). While it exists, /root/old
+# is the only version known to work. JSON {"from", "to", "phase"}; phase "switching" while
+# /kvmapp is replaced, "installed" once complete. Same format as server/service/application/pending.go.
 RESTART_PENDING = "/etc/kvm/update-restart-pending"
 STOP_TIMEOUT = 20
 START_TIMEOUT = 60
@@ -467,12 +468,27 @@ def check_not_interrupted() -> None:
     """Refuse to work over an app that another update is moving, or that an earlier switch left
     half-done: /root/old may then be the only copy. (Upstream web updaters do not share our lock,
     so this is checked before stopping and again after.)"""
-    if os.path.exists(RESTART_PENDING):
-        raise UpdateError(
-            f"{read_version(APP_DIR) or 'a version'} was installed but has not been seen running yet; "
-            f"{BACKUP_DIR} is the version known to work. Nothing was changed. Start it first "
-            "(/kvmapp/system/init.d/S95nanokvm restart, or retry from the web page), then update"
-        )
+    record = read_pending()
+    if record is not None:
+        current = read_version(APP_DIR)
+        whole = all(os.path.isfile(os.path.join(APP_DIR, f)) for f in APP_CORE_FILES)
+        if whole and current in (record.get("from"), record.get("to")) and current and \
+                all(running(d) for d in DAEMONS):
+            # The version that was started (or the previous one, restored by hand or by an older
+            # init script that does not know this record) is running: the update is settled.
+            say(f"{current} is running; clearing the record of the earlier update")
+            os.remove(RESTART_PENDING)
+        elif record.get("phase") == "installed":
+            raise UpdateError(
+                f"{record.get('to') or 'a version'} was installed but has not been seen running yet; "
+                f"{BACKUP_DIR} is the version known to work. Nothing was changed. Start it first "
+                "(/kvmapp/system/init.d/S95nanokvm restart, or retry the restart from the web page), then update"
+            )
+        else:
+            raise UpdateError(
+                f"an earlier update stopped while replacing {APP_DIR}; {BACKUP_DIR} is the version known "
+                "to work. Nothing was changed. Recover as described in FORK.md"
+            )
     missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
     backup_partial = os.path.lexists(BACKUP_DIR) and not all(
         os.path.isfile(os.path.join(BACKUP_DIR, f)) for f in APP_CORE_FILES)
@@ -528,12 +544,30 @@ def drop_stage() -> None:
     shutil.rmtree(STAGE_DIR, ignore_errors=True)
 
 
-def set_restart_pending() -> None:
-    """Record, durably, that /kvmapp is about to hold a version not yet seen running."""
+def read_pending():
+    """The record, or None. An unreadable record counts as phase "switching" (state unknown)."""
+    try:
+        with open(RESTART_PENDING) as f:
+            data = f.read()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"phase": "switching"}
+    try:
+        record = json.loads(data)
+    except ValueError:
+        return {"phase": "switching"}
+    if not isinstance(record, dict) or record.get("phase") != "installed":
+        record = {**(record if isinstance(record, dict) else {}), "phase": "switching"}
+    return record
+
+
+def set_restart_pending(phase: str, old: str, new: str) -> None:
+    """Record, durably, that /kvmapp holds (or is about to hold) a version not yet seen running."""
     os.makedirs(os.path.dirname(RESTART_PENDING), exist_ok=True)
     fd = os.open(RESTART_PENDING, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
     try:
-        os.write(fd, b"restart pending\n")
+        os.write(fd, (json.dumps({"from": old, "to": new, "phase": phase}) + "\n").encode())
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -619,8 +653,9 @@ def switch_and_start(version: str, reboots: bool) -> None:
         service(STOP_SCRIPT, "restart")
         raise
 
+    previous = read_version(APP_DIR)
     try:
-        set_restart_pending()
+        set_restart_pending("switching", previous, version)
     except OSError as e:
         drop_stage()
         outcome = restart_previous(STOP_SCRIPT)
@@ -628,15 +663,25 @@ def switch_and_start(version: str, reboots: bool) -> None:
     try:
         switch()
     except Exception as e:
-        os.remove(RESTART_PENDING)  # the previous version is back in place
         drop_stage()
+        # The previous version is back in place. Clearing the record and starting it again are
+        # independent: a failure of one must not skip the other.
+        note = ""
+        try:
+            os.remove(RESTART_PENDING)
+        except OSError as remove_error:
+            note = f" (the record {RESTART_PENDING} could not be removed: {remove_error})"
         outcome = restart_previous(app_script())
         if outcome.endswith("either"):
             raise UpdateError(
                 f"could not put the new version in place ({e}), and the previous version did not start "
-                "again either. Recover as described in FORK.md"
+                f"again either{note}. Recover as described in FORK.md"
             )
-        raise UpdateError(f"could not put the new version in place; {outcome}: {e}")
+        raise UpdateError(f"could not put the new version in place; {outcome}{note}: {e}")
+    try:
+        set_restart_pending("installed", previous, version)  # complete; only the restart is missing
+    except OSError as e:
+        say(f"warning: could not mark {version} as installed in {RESTART_PENDING}: {e}", err=True)
     remove_stage_mark()
     os.sync()
 
