@@ -260,6 +260,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         }
         if (!rsp.data?.restarting) {
           // Nothing to restart any more (it settled meanwhile): show the current state.
+          clearWatch();
           setIsLocked(false);
           checkForUpdates();
           return;
@@ -348,7 +349,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       .update(latestVersion)
       .then((rsp: any) => {
         if (rsp.code === -5) {
-          // A newer release appeared since the page was loaded: show it before updating.
+          // A newer release appeared since the page was loaded: nothing was installed. Show it.
+          clearWatch();
           setIsLocked(false);
           checkForUpdates();
           return;
@@ -363,6 +365,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
         const code = error?.response?.status;
         if (code && ![502, 503, 504].includes(code)) {
           // Refused outright (e.g. by a proxy): nothing started. Say so and unlock.
+          clearWatch();
           setIsLocked(false);
           setStatus('failed');
           setErrMsg(`${t('settings.update.updateFailed')} (HTTP ${code})`);

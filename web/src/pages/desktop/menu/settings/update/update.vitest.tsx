@@ -93,3 +93,27 @@ test('a chosen package is sent once with its SHA-256 and its restart is watched'
   expect(setIsLocked).toHaveBeenLastCalledWith(true);
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+
+test('an update refused because a newer release appeared leaves nothing to resume', async () => {
+  const outdated = {
+    code: 0,
+    data: { current: '2.5.4.1', latest: '2.5.4.2', serverStarted: 100 }
+  };
+  vi.mocked(api.getVersion).mockResolvedValue(outdated as never);
+  vi.mocked(api.update).mockResolvedValue({ code: -5, msg: 'the latest version changed' } as never);
+
+  const setIsLocked = vi.fn();
+  const { findByText, unmount } = render(<Update setIsLocked={setIsLocked} />);
+  fireEvent.click(await findByText('settings.update.confirm'));
+
+  await waitFor(() => expect(api.update).toHaveBeenCalledWith('2.5.4.2'));
+  await waitFor(() => expect(setIsLocked).toHaveBeenLastCalledWith(false));
+  expect(sessionStorage.getItem('nanokvm-update-watch')).toBeNull();
+
+  // Opening the page again does not resume a watch for the update that never started.
+  unmount();
+  setIsLocked.mockClear();
+  render(<Update setIsLocked={setIsLocked} />);
+  await waitFor(() => expect(api.getVersion).toHaveBeenCalled());
+  expect(setIsLocked).not.toHaveBeenCalledWith(true);
+});

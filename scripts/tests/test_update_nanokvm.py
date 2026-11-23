@@ -815,6 +815,46 @@ class UpdateScriptTest(unittest.TestCase):
                 result = subprocess.run(["sh", "-c", script], capture_output=True)
                 self.assertEqual(result.returncode == 0, installed)
 
+    def locking_init_script(self, label):
+        """An init script that, like S95nanokvm, refuses to run while its lock is held."""
+        return (f"#!/usr/bin/env python3\n"
+                f"import fcntl, sys\n"
+                f"lock = open({self.u.SERVICE_LOCK!r}, 'w')\n"
+                f"try:\n"
+                f"    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                f"except OSError:\n"
+                f"    sys.exit(1)\n"
+                f"open({str(self.base / 'root/calls.log')!r}, 'a').write({label!r} + ' ' + sys.argv[1] + '\\n')\n").encode()
+
+    def test_previous_version_starts_after_a_failed_switch(self):
+        write_script(pathlib.Path(self.u.APP_DIR) / "system/init.d/S95nanokvm", self.locking_init_script("old-S95"))
+        real_rename = os.rename
+
+        def rename(src, dst):
+            if src == self.u.STAGE_DIR:
+                raise OSError("no space left")
+            real_rename(src, dst)
+
+        self.u.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+        self.u.os.rename, self.u.os.path = rename, os.path
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("previous version was started again", file=path, sha512=digest)
+        self.assertIn("old-S95 restart", self.calls())
+
+    def test_previous_version_starts_after_a_failed_record(self):
+        write_script(pathlib.Path(self.u.STOP_SCRIPT), self.locking_init_script("etc-S95"))
+        real_set = self.u.set_restart_pending
+
+        def set_pending(phase, a, b):
+            if phase == "switching":
+                raise OSError("no space left on device")
+            real_set(phase, a, b)
+
+        self.u.set_restart_pending = set_pending
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("previous version was started again", file=path, sha512=digest)
+        self.assertIn("etc-S95 restart", self.calls())
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)

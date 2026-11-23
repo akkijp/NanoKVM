@@ -884,7 +884,7 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     # elsewhere must not start from a half-switched /kvmapp. The restart below comes after.
     service_lock = lock_service_operations()
     try:
-        install_locked(version, reboots, previous)
+        install_locked(version, reboots, previous, service_lock)
     finally:
         service_lock.close()
     start_new_version(version, reboots)
@@ -907,7 +907,9 @@ def lock_service_operations():
             time.sleep(0.2)
 
 
-def install_locked(version: str, reboots: str, previous: str) -> None:
+def install_locked(version: str, reboots: str, previous: str, service_lock) -> None:
+    """Record, switch and record again, holding S95nanokvm's lock. Every path that starts the
+    previous version again releases that lock first: S95nanokvm takes it too and would refuse."""
     try:
         set_restart_pending("switching", previous, version)
     except OSError as e:
@@ -920,6 +922,7 @@ def install_locked(version: str, reboots: str, previous: str) -> None:
         except OSError as clear_error:
             note = (f" The record {RESTART_PENDING} could not be removed ({clear_error}); remove it "
                     "by hand after checking that /kvmapp is the previous version (FORK.md).")
+        service_lock.close()  # S95nanokvm needs it to start the previous version
         outcome = restart_previous(STOP_SCRIPT)
         raise UpdateError(f"could not record the pending restart ({e}); nothing was installed, and {outcome}.{note}")
     try:
@@ -942,6 +945,7 @@ def install_locked(version: str, reboots: str, previous: str) -> None:
             clear_restart_pending()
         except OSError as remove_error:
             note = f" (the record {RESTART_PENDING} could not be removed: {remove_error})"
+        service_lock.close()  # S95nanokvm needs it to start the previous version
         outcome = restart_previous(app_script())
         if outcome.endswith("either"):
             raise UpdateError(
