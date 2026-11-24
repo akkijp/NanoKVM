@@ -97,6 +97,7 @@ class UpdateScriptTest(unittest.TestCase):
             "system/init.d/S95nanokvm": init,
             "system/update-nanokvm.py": b"x",
             "kvm_new_app": b"",
+            "server/dl_lib.list": b"libkvm.so\n",
         }
         for required in self.u.REQUIRED_FILES:
             files.setdefault(required, b"x")
@@ -863,9 +864,9 @@ class UpdateScriptTest(unittest.TestCase):
         state = {"locked": False}
         real_lock = self.u.lock_service_operations
 
-        def lock():
+        def lock(opened):
             state["locked"] = True
-            return real_lock()
+            return real_lock(opened)
 
         self.u.lock_service_operations = lock
         # The daemons are gone at the stop, but running again once the lock is taken.
@@ -936,6 +937,38 @@ class UpdateScriptTest(unittest.TestCase):
             self.run_update(file=path, sha512=digest)
             self.assertEqual(pathlib.Path(self.u.INSTALL_COUNT).read_text(), f"{n}\n")
             pathlib.Path(self.u.RESTART_PENDING).unlink(missing_ok=True)
+
+    def test_libraries_are_checked_against_the_packages_own_list(self):
+        base = self.entries("2.5.4.2", skip=("server/dl_lib.list",))
+        root = "nanokvm_2.5.4.2"
+
+        def with_list(listing, *libs):
+            return base + [(f"{root}/server/dl_lib.list", listing.encode())] + [
+                (f"{root}/server/dl_lib/{lib}", b"x") for lib in libs]
+
+        ok = self.package("2.5.4.2", with_list("libkvm.so\nlibsys.so\n", "libsys.so"))
+        (self.base / "x1").mkdir()
+        self.u.extract(ok[0], "2.5.4.2", str(self.base / "x1"))  # fewer libraries than today: fine
+        for entries, message in (
+            (with_list("libkvm.so\nlibsys.so\n"), "missing server/dl_lib/libsys.so"),
+            (with_list("libkvm.so\n", "libextra.so"), "libextra.so, which its list does not name"),
+            (with_list("libsys.so\n", "libsys.so"), "does not name libkvm.so"),
+        ):
+            with self.subTest(message=message):
+                path, _ = self.package("2.5.4.2", entries, name=f"p{abs(hash(message))}/nanokvm_2.5.4.2.tar.gz")
+                work = self.base / f"x{abs(hash(message))}"
+                work.mkdir()
+                with self.assertRaisesRegex(self.u.UpdateError, message):
+                    self.u.extract(path, "2.5.4.2", str(work))
+
+    def test_lock_file_that_cannot_be_created_stops_nothing(self):
+        def fail():
+            raise OSError(28, "No space left on device")
+
+        self.u.open_service_lock = fail
+        path, digest = self.package("2.5.4.1")
+        self.assert_rejected("nothing was stopped or changed", file=path, sha512=digest)
+        self.assertNotIn("stop", self.calls())
 
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"

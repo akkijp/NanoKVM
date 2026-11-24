@@ -100,6 +100,9 @@ func packageEntries(root, version, skip string) []archiveEntry {
 		if file == "version" {
 			data = version + "\n"
 		}
+		if file == "server/dl_lib.list" {
+			data = "libkvm.so\n"
+		}
 		entries = append(entries, archiveEntry{name: root + "/" + file, typeFlag: tar.TypeReg, data: data})
 	}
 	return entries

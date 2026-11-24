@@ -17,6 +17,11 @@ DOCKER_RUN_BASE := docker run -e UID=$(UID) -e GID=$(GID) -v $(PWD):/home/build/
 # to recursively rewrite the MaixCDK home directory at container startup.
 DOCKER_BUILD_ARGS := --build-arg DOCKER_UID=$(UID) --build-arg DOCKER_GID=$(GID)
 
+# The image ID builder-image produced, per checkout (akkijp fork): the builds below run that exact
+# image, so another checkout re-tagging $(IMAGE_NAME) meanwhile cannot swap the SDK under them.
+BUILDER_IID := $(PWD)/build/.builder-image-id
+BUILDER := "$$(cat $(BUILDER_IID))"
+
 # Build commands
 GO_BUILD_CMD := cd /home/build/NanoKVM/server && ./build.sh
 SUPPORT_BUILD_CMD := . ./home/build/MaixCDK/bin/activate && cd /home/build/NanoKVM/support/sg2002 && ./build kvm_system && ./build kvm_system add_to_kvmapp
@@ -75,37 +80,37 @@ check-image: check-root
 # toolchain, Go or MaixCDK versions (akkijp fork).
 builder-image: check-root
 	@echo "Building Docker image..."
-	@docker build --platform linux/amd64 $(DOCKER_BUILD_ARGS) -t $(IMAGE_NAME) -f docker/Dockerfile ./
+	@mkdir -p build && docker build --platform linux/amd64 $(DOCKER_BUILD_ARGS) --iidfile $(BUILDER_IID) -t $(IMAGE_NAME) -f docker/Dockerfile ./
 
 # Force rebuild Docker image
 rebuild-image: check-root
 	@echo "Force rebuilding Docker image..."
-	@docker build --platform linux/amd64 --no-cache $(DOCKER_BUILD_ARGS) -t $(IMAGE_NAME) -f docker/Dockerfile ./
+	@mkdir -p build && docker build --platform linux/amd64 --no-cache $(DOCKER_BUILD_ARGS) --iidfile $(BUILDER_IID) -t $(IMAGE_NAME) -f docker/Dockerfile ./
 
 # Enter interactive shell (equivalent to build.sh with no arguments)
 shell: check-root builder-image
 	@echo "Switching into builder..."
-	@$(DOCKER_RUN_BASE) -it $(IMAGE_NAME) /bin/bash -c ". ./home/build/MaixCDK/bin/activate && cd /home/build/NanoKVM ; exec bash"
+	@$(DOCKER_RUN_BASE) -it $(BUILDER) /bin/bash -c ". ./home/build/MaixCDK/bin/activate && cd /home/build/NanoKVM ; exec bash"
 
 # Build Go application
 app: check-root builder-image
 	@echo "Building app..."
-	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(IMAGE_NAME) /bin/bash -c '$(GO_BUILD_CMD)'
+	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(BUILDER) /bin/bash -c '$(GO_BUILD_CMD)'
 
 # Build hardware support libraries
 support: check-root builder-image
 	@echo "Building support..."
-	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(IMAGE_NAME) /bin/bash -c '$(SUPPORT_BUILD_CMD)'
+	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(BUILDER) /bin/bash -c '$(SUPPORT_BUILD_CMD)'
 
 # Build video libraries (libkvm.so) into kvmapp/server/dl_lib
 vision: check-root builder-image
 	@echo "Building vision..."
-	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(IMAGE_NAME) /bin/bash -c '$(VISION_BUILD_CMD)'
+	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(BUILDER) /bin/bash -c '$(VISION_BUILD_CMD)'
 
 # Build every riscv64 release artifact in one container pass
 release-build: check-root builder-image
 	@echo "Building release artifacts..."
-	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(IMAGE_NAME) /bin/bash -c '$(RELEASE_BUILD_CMD)'
+	@$(DOCKER_RUN_BASE) $(DOCKER_TTY) $(BUILDER) /bin/bash -c '$(RELEASE_BUILD_CMD)'
 
 # Build the frontend in the pinned node container (scripts/fork-env.sh; pnpm is pinned by
 # "packageManager" in web/package.json). The builder image has no Node. The source is copied

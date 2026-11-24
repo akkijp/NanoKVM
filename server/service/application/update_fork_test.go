@@ -1,6 +1,7 @@
 package application
 
 import (
+	"archive/tar"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
@@ -59,24 +60,42 @@ func TestExtractedPackageNeedsEveryMigrationFile(t *testing.T) {
 	}
 }
 
-func TestRequiredLibrariesMatchServerDlLib(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join("..", "..", "dl_lib"))
-	if err != nil {
-		t.Fatal(err)
+func TestLibrariesAreCheckedAgainstThePackagesOwnList(t *testing.T) {
+	root := "nanokvm_2.5.4.2"
+	build := func(list string, libs ...string) string {
+		entries := packageEntries(root, "2.5.4.2", "server/dl_lib.list")
+		entries = append(entries, archiveEntry{name: root + "/server/dl_lib.list", typeFlag: tar.TypeReg, data: list})
+		for _, lib := range libs {
+			entries = append(entries, archiveEntry{name: root + "/server/dl_lib/" + lib, typeFlag: tar.TypeReg, data: "x"})
+		}
+		archive := writeTestArchive(t, entries)
+		extracted, err := extractUpdateArchive(archive, t.TempDir(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return extracted
 	}
-	var tracked []string
-	for _, entry := range entries {
-		tracked = append(tracked, entry.Name())
+	// A later version that dropped a library the running one has (upstream 7f95fe9 dropped
+	// libopencv_video.so.409) is accepted: only its own list counts.
+	if err := validateExtractedPackage(build("libkvm.so\nlibsys.so\n", "libsys.so"), "2.5.4.2"); err != nil {
+		t.Fatalf("a package with fewer libraries: %v", err)
 	}
-	if strings.Join(tracked, ",") != strings.Join(requiredRuntimeLibraries, ",") {
-		t.Fatalf("requiredRuntimeLibraries = %v, server/dl_lib has %v", requiredRuntimeLibraries, tracked)
+	if err := validateExtractedPackage(build("libkvm.so\nlibsys.so\n"), "2.5.4.2"); err == nil || !strings.Contains(err.Error(), "libsys.so") {
+		t.Fatalf("a listed library that is missing: %v", err)
+	}
+	if err := validateExtractedPackage(build("libkvm.so\n", "libextra.so"), "2.5.4.2"); err == nil || !strings.Contains(err.Error(), "libextra.so") {
+		t.Fatalf("an unlisted library: %v", err)
+	}
+	if err := validateExtractedPackage(build("libkvm.so\n../x\n"), "2.5.4.2"); err == nil {
+		t.Fatal("a path in the list must be refused")
 	}
 }
 
 func TestShippedAppHasEveryRequiredFile(t *testing.T) {
 	for _, file := range requiredPackageFiles {
 		switch file {
-		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system", "server/web/index.html":
+		case "version", "server/NanoKVM-Server", "kvm_system/kvm_system", "server/web/index.html",
+			"server/dl_lib.list", "server/dl_lib/libkvm.so":
 			continue // produced by the build
 		}
 		if strings.HasPrefix(file, "server/dl_lib/") {

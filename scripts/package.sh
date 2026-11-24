@@ -136,6 +136,11 @@ if [ "$staged_libs" != "$tracked_libs" ]; then
     exit 1
 fi
 
+#    The package names its own libraries (server/dl_lib.list): the device checks a package
+#    against that list, not against the libraries of the version it runs, so a later version
+#    may drop or add one.
+printf '%s\n' "$staged_libs" > "$STAGE/server/dl_lib.list"
+
 #    A library arrives either from the SDK dist (mode 755) or from the tracked
 #    backfill (git stores them 644), so without this the archive would depend on
 #    which path populated each file. 644 is what published releases have always

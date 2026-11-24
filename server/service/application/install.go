@@ -145,15 +145,18 @@ func installPreparedPackage(sourceDir string) error {
 		return fmt.Errorf("sync the new version to disk: %w", err)
 	}
 
+	// Counted while the record still says "switching": a page that reinstalled the running
+	// version sees the count move and knows the install happened (a restart alone, e.g. after a
+	// power cut during the upload, does not count). Counted before "installed", a power cut in
+	// between leaves "switching", which the page never takes as finished; counted after, it
+	// could leave a working reinstall that the page can never confirm.
+	if err := countInstall(); err != nil {
+		log.Warnf("count the install: %v", err)
+	}
 	// Complete: only the restart is missing, which may now be retried.
 	record.Phase = phaseInstalled
 	if err := writePending(record); err != nil {
 		return err
-	}
-	// Counted after the record: a page that reinstalled the running version sees the count move
-	// and knows the install happened (a restart alone, e.g. after a power cut, does not count).
-	if err := countInstall(); err != nil {
-		log.Warnf("count the install: %v", err)
 	}
 	return nil
 }

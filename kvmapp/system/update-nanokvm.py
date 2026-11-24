@@ -116,48 +116,11 @@ REQUIRED_FILES = (
     "system/ko/soph_mipi_rx.ko",
     # The web UI needs its page.
     "server/web/index.html",
-) + tuple(f"server/dl_lib/{lib}" for lib in (
-    # Runtime libraries of the server (libkvm.so and what it loads). package.sh ships every one of
-    # them; keep in sync with server/dl_lib/ and archive.go (a test checks both).
-    "libaaccomm2.so",
-    "libaacdec2.so",
-    "libaacenc2.so",
-    "libaacsbrdec2.so",
-    "libaacsbrenc2.so",
-    "libae.so",
-    "libaf.so",
-    "libawb.so",
-    "libcli.so",
-    "libcvi_RES1.so",
-    "libcvi_VoiceEngine.so",
-    "libcvi_audio.so",
-    "libcvi_bin.so",
-    "libcvi_bin_isp.so",
-    "libcvi_ispd2.so",
-    "libcvi_ive.so",
-    "libcvi_ssp.so",
-    "libcvi_vqe.so",
-    "libdnvqe.so",
-    "libini.so",
-    "libisp.so",
-    "libisp_algo.so",
-    "libjson-c.so.5",
-    "libkvm.so",
-    "libkvm_mmf.so",
-    "libmipi_tx.so",
-    "libmisc.so",
-    "libopencv_core.so.409",
-    "libopencv_highgui.so.409",
-    "libopencv_imgcodecs.so.409",
-    "libopencv_imgproc.so.409",
-    "libosdc.so",
-    "libraw_dump.so",
-    "libsys.so",
-    "libtinyalsa.so",
-    "libvdec.so",
-    "libvenc.so",
-    "libvpu.so",
-))
+    # The package's own list of its libraries (checked by check_library_list) and the video
+    # library the server always loads.
+    "server/dl_lib.list",
+    "server/dl_lib/libkvm.so",
+)
 
 # The migration replaces the HDMI driver and reboots unless the installed one is
 # current. Keep in sync with new_app_init() in
@@ -356,7 +319,31 @@ def extract(package: str, version: str, work: str, unpacked_size: int = None) ->
     with open(os.path.join(source_dir, "version")) as f:
         if f.read().strip() != version:
             raise UpdateError("package version file does not match")
+    check_library_list(source_dir)
     return source_dir
+
+
+def check_library_list(source_dir: str) -> None:
+    """server/dl_lib must hold exactly the libraries the package lists in server/dl_lib.list
+    (written by package.sh). The list belongs to the new version, so a release may drop or add
+    libraries; the release build checks it against the tracked server/dl_lib."""
+    with open(os.path.join(source_dir, "server", "dl_lib.list")) as f:
+        listed = {line.strip() for line in f if line.strip()}
+    for name in listed:
+        if "/" in name or "\\" in name or name in (".", ".."):
+            raise UpdateError(f"package lists a bad library name {name!r}")
+    if "libkvm.so" not in listed:
+        raise UpdateError("package library list does not name libkvm.so")
+    lib_dir = os.path.join(source_dir, "server", "dl_lib")
+    present = set()
+    for entry in os.scandir(lib_dir):
+        if not entry.is_file(follow_symlinks=False):
+            raise UpdateError(f"package has server/dl_lib/{entry.name}, which is not a regular file")
+        present.add(entry.name)
+    if listed - present:
+        raise UpdateError(f"package is missing server/dl_lib/{sorted(listed - present)[0]}")
+    if present - listed:
+        raise UpdateError(f"package has server/dl_lib/{sorted(present - listed)[0]}, which its list does not name")
 
 
 def default_signals() -> None:
@@ -905,6 +892,13 @@ def install(source_dir: str, version: str) -> None:
 
 def switch_and_start(version: str, reboots: str, previous: str) -> None:
     try:
+        # The lock file is created before anything is stopped: if that fails (e.g. /run is full),
+        # the running version is left alone. Only the flock itself waits until after the stop.
+        try:
+            service_lock_file = open_service_lock()
+        except OSError as e:
+            drop_stage()
+            raise UpdateError(f"could not open {SERVICE_LOCK} ({e}); nothing was stopped or changed")
         stop_old()
     except UpdateError:
         drop_stage()
@@ -924,7 +918,7 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     # Hold S95nanokvm's service lock from here until "installed": a restart started elsewhere must
     # not start from a half-switched /kvmapp. Taken before anything changes, so an abort here
     # leaves even the previous backup alone. The restart below comes after.
-    service_lock = lock_service_operations()
+    service_lock = lock_service_operations(service_lock_file)
     try:
         # A start that slipped in between the stop and this lock would leave the old daemons
         # running while /kvmapp is replaced under them. Check again, now that no start can.
@@ -950,9 +944,13 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
     start_new_version(version, reboots)
 
 
-def lock_service_operations():
+def open_service_lock():
     fd = os.open(SERVICE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
-    lock = os.fdopen(fd, "w")
+    return os.fdopen(fd, "w")
+
+
+def lock_service_operations(lock):
+    """Take S95nanokvm's lock on the already opened file, waiting up to 30 s."""
     deadline = time.monotonic() + 30
     while True:
         try:
@@ -1026,6 +1024,12 @@ def install_locked(version: str, reboots: str, previous: str, service_lock) -> N
             f"{version} was put in place, but writing it to the card failed ({e}). It is left marked as "
             f"unfinished ({RESTART_PENDING}), so it will not be started; recover as described in FORK.md"
         )
+    # Counted while the record still says "switching" (see install.go): a power cut in between
+    # leaves "switching", never a working reinstall that the page cannot confirm.
+    try:
+        count_install()
+    except OSError as e:
+        say(f"warning: could not count the install in {INSTALL_COUNT} ({e})")
     try:
         set_restart_pending("installed", previous, version)  # complete; only the restart is missing
     except OSError as e:
@@ -1035,10 +1039,6 @@ def install_locked(version: str, reboots: str, previous: str, service_lock) -> N
             f"{version} was put in place, but its record could not be saved ({e}); it was not started. "
             f"Check {RESTART_PENDING} and recover as described in FORK.md"
         )
-    try:
-        count_install()
-    except OSError as e:
-        say(f"warning: could not count the install in {INSTALL_COUNT} ({e})")
 
 
 

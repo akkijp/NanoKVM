@@ -194,6 +194,53 @@ func validateExtractedPackage(rootDir, expectedVersion string) error {
 			return fmt.Errorf("invalid update package layout: missing required file %s", required)
 		}
 	}
+	return checkLibraryList(rootDir)
+}
+
+// checkLibraryList checks server/dl_lib against the package's own list (server/dl_lib.list,
+// written by package.sh): exactly the listed libraries, each a regular file. The list belongs to
+// the new version, so a release may drop or add libraries; the release build checks the list
+// against the tracked server/dl_lib.
+func checkLibraryList(rootDir string) error {
+	data, err := os.ReadFile(filepath.Join(rootDir, "server", "dl_lib.list"))
+	if err != nil {
+		return fmt.Errorf("invalid update package layout: read server/dl_lib.list: %w", err)
+	}
+	listed := map[string]struct{}{}
+	for _, line := range strings.Split(string(data), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		if strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
+			return fmt.Errorf("invalid update package layout: bad library name %q in server/dl_lib.list", name)
+		}
+		listed[name] = struct{}{}
+	}
+	if _, ok := listed["libkvm.so"]; !ok {
+		return fmt.Errorf("invalid update package layout: server/dl_lib.list does not name libkvm.so")
+	}
+	entries, err := os.ReadDir(filepath.Join(rootDir, "server", "dl_lib"))
+	if err != nil {
+		return fmt.Errorf("invalid update package layout: read server/dl_lib: %w", err)
+	}
+	present := map[string]struct{}{}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("invalid update package layout: server/dl_lib/%s is not a regular file", entry.Name())
+		}
+		present[entry.Name()] = struct{}{}
+	}
+	for name := range listed {
+		if _, ok := present[name]; !ok {
+			return fmt.Errorf("invalid update package layout: missing library server/dl_lib/%s", name)
+		}
+	}
+	for name := range present {
+		if _, ok := listed[name]; !ok {
+			return fmt.Errorf("invalid update package layout: server/dl_lib/%s is not in server/dl_lib.list", name)
+		}
+	}
 	return nil
 }
 
@@ -218,54 +265,10 @@ var requiredPackageFiles = []string{
 	"system/init.d/S98tailscaled",
 	"system/ko/soph_mipi_rx.ko",
 	"server/web/index.html",
+	"server/dl_lib.list",
+	"server/dl_lib/libkvm.so",
 }
 
 // requiredRuntimeLibraries are the server's libraries (libkvm.so and everything it loads). Every
 // package ships all of them (scripts/package.sh backfills from server/dl_lib), so a package missing
 // one would leave the server unable to start. Keep in sync with server/dl_lib/ (a test checks it).
-var requiredRuntimeLibraries = []string{
-	"libaaccomm2.so",
-	"libaacdec2.so",
-	"libaacenc2.so",
-	"libaacsbrdec2.so",
-	"libaacsbrenc2.so",
-	"libae.so",
-	"libaf.so",
-	"libawb.so",
-	"libcli.so",
-	"libcvi_RES1.so",
-	"libcvi_VoiceEngine.so",
-	"libcvi_audio.so",
-	"libcvi_bin.so",
-	"libcvi_bin_isp.so",
-	"libcvi_ispd2.so",
-	"libcvi_ive.so",
-	"libcvi_ssp.so",
-	"libcvi_vqe.so",
-	"libdnvqe.so",
-	"libini.so",
-	"libisp.so",
-	"libisp_algo.so",
-	"libjson-c.so.5",
-	"libkvm.so",
-	"libkvm_mmf.so",
-	"libmipi_tx.so",
-	"libmisc.so",
-	"libopencv_core.so.409",
-	"libopencv_highgui.so.409",
-	"libopencv_imgcodecs.so.409",
-	"libopencv_imgproc.so.409",
-	"libosdc.so",
-	"libraw_dump.so",
-	"libsys.so",
-	"libtinyalsa.so",
-	"libvdec.so",
-	"libvenc.so",
-	"libvpu.so",
-}
-
-func init() {
-	for _, lib := range requiredRuntimeLibraries {
-		requiredPackageFiles = append(requiredPackageFiles, "server/dl_lib/"+lib)
-	}
-}
