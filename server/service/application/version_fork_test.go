@@ -1341,3 +1341,39 @@ func TestBusyServiceLockKeepsThePreviousBackup(t *testing.T) {
 		t.Fatal("the previous backup was removed although nothing was installed")
 	}
 }
+
+func TestWifiRequestConsumedDuringTheMove(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+	for path, content := range map[string]string{
+		filepath.Join(src, "kvm", "wifi_try_connect"):  "",
+		filepath.Join(src, "server", "NanoKVM-Server"): "bin",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := listFiles(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, listed := files["kvm/wifi_try_connect"]; listed {
+		t.Fatal("the Wi-Fi request must not be part of the listing")
+	}
+	oldMove := moveFile
+	t.Cleanup(func() { moveFile = oldMove })
+	moveFile = func(from, to string) error {
+		// kvm_system consumes the request right after the listing.
+		_ = os.Remove(filepath.Join(src, "kvm", "wifi_try_connect"))
+		return oldMove(from, to)
+	}
+	if err := moveTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "server", "NanoKVM-Server")); err != nil {
+		t.Fatal("a real file was not moved")
+	}
+}

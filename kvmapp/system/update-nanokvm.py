@@ -492,6 +492,18 @@ def migration_reboots(new_init_script: str) -> str:
 APP_CORE_FILES = ("server/NanoKVM-Server", "kvm_system/kvm_system")
 
 
+def boot_statuses_ok(recovering_to_from: bool) -> bool:
+    """S95nanokvm's results for this boot. The new version is settled only on explicit success:
+    picoclaw "off", and the microphone "off", "off (...)" or "on" (enabled in /etc/kvm). Missing
+    files are accepted only when the device runs the "from" version again, which may be an
+    upstream one that writes none; empty, unreadable or "FAILED" never count."""
+    mic, pico = status_of(MIC_STATUS), status_of(PICOCLAW_STATUS)
+    if recovering_to_from and not os.path.lexists(MIC_STATUS) and not os.path.lexists(PICOCLAW_STATUS):
+        return True
+    mic_ok = mic == "on" or mic == "off" or mic.startswith("off (")
+    return mic_ok and pico == "off"
+
+
 def check_not_interrupted() -> None:
     """Refuse to work over an app that another update is moving, or that an earlier switch left
     half-done: /root/old may then be the only copy. (Upstream web updaters do not share our lock,
@@ -507,7 +519,7 @@ def check_not_interrupted() -> None:
         # unreadable file never matches.
         version_missing = not os.path.lexists(os.path.join(APP_DIR, "version"))
         known = bool(current) or version_missing
-        boot_ok = not any(status_of(path).startswith("FAILED") for path in (MIC_STATUS, PICOCLAW_STATUS))
+        boot_ok = boot_statuses_ok(recovering_to_from=(current == record.get("from")))
         settled = (whole and known and current in (record.get("from"), record.get("to"))
                    and boot_ok
                    and daemons_run_app(record["_mtime"])

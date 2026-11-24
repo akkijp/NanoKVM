@@ -209,11 +209,13 @@ func lockServiceOperations() (func(), error) {
 	}
 }
 
-// runtimeTemp reports files the running app creates and renames on its own (the video library's
-// state file, kvm/.state.tmp.*): they may vanish while /kvmapp is being moved and are not part of
-// any version.
+// runtimeTemp reports files the running device creates and removes on its own: the video
+// library's state file (kvm/.state.tmp.*) and the Wi-Fi request that kvm_system consumes
+// (kvm/wifi_try_connect). They may vanish while /kvmapp is being moved and are not part of any
+// version; one that is still there stays in /kvmapp.
 func runtimeTemp(rel string) bool {
-	return strings.HasPrefix(filepath.ToSlash(rel), "kvm/.state.tmp.")
+	rel = filepath.ToSlash(rel)
+	return strings.HasPrefix(rel, "kvm/.state.tmp.") || rel == "kvm/wifi_try_connect"
 }
 
 // moveTree moves every file of src into dst like utils.MoveFilesRecursively, but skips runtime

@@ -875,6 +875,30 @@ class UpdateScriptTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
         self.assertFalse(os.path.exists(self.u.STAGE_DIR))
 
+    def test_boot_status_needs_explicit_success_for_the_new_version(self):
+        mic, pico = pathlib.Path(self.u.MIC_STATUS), pathlib.Path(self.u.PICOCLAW_STATUS)
+        cases = [
+            ("off", "off", False, True),
+            ("on", "off", False, True),
+            ("off (enabled in /etc/kvm, reboot to turn it on)", "off", False, True),
+            ("", "off", False, False),          # empty: could not write FAILED
+            (None, "off", False, False),        # missing
+            ("off", None, False, False),
+            ("FAILED: capture still present on card 0", "off", False, False),
+            ("off", "FAILED: picoclaw could not be stopped", False, False),
+            (None, None, True, True),           # back on the "from" version (maybe upstream)
+            (None, None, False, False),
+            ("", "", True, False),
+        ]
+        for m, p_, recovering, ok in cases:
+            with self.subTest(mic=m, pico=p_, recovering=recovering):
+                for path, value in ((mic, m), (pico, p_)):
+                    if value is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_text(value + "\n" if value else "")
+                self.assertEqual(self.u.boot_statuses_ok(recovering), ok)
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)
