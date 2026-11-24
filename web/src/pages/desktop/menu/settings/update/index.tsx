@@ -7,7 +7,7 @@ import * as api from '@/api/application.ts';
 
 import { Offline } from './offline.tsx';
 import { versionStatus } from '@/lib/version.ts';
-import { clearWatch, loadWatch, saveWatch, watchFinished } from '@/lib/update-watch.ts';
+import { clearWatch, loadWatch, saveWatch, watchFinished, watchUnconfirmable } from '@/lib/update-watch.ts';
 
 type UpdateProps = {
   setIsLocked: (isClosable: boolean) => void;
@@ -124,7 +124,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             // Stopped half-way (manual recovery) or the restart failed (retry): stop watching and
             // fall through to show it, with the settings unlocked.
             reloadWhenSettledRef.current = false;
-          } else if (Date.now() >= watchUntilRef.current) {
+          } else if (Date.now() >= watchUntilRef.current || watchUnconfirmable(state, rsp.data)) {
             stopWatching(t('settings.update.unconfirmed'));
             return;
           } else {

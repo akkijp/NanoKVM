@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { clearWatch, loadWatch, saveWatch, watchFinished } from './update-watch.ts';
+import { clearWatch, loadWatch, saveWatch, watchFinished, watchUnconfirmable } from './update-watch.ts';
 
 test('a new version that runs after a restart is finished', () => {
   const state = { target: '2.5.4.2', previous: '2.5.4.1', startedFrom: 100, sawPending: false, installsFrom: null };
@@ -73,4 +73,13 @@ test('a reinstall of the running version needs one more install, not just a rest
   assert.equal(watchFinished({ ...base, installsFrom: -1 }, { current: '2.5.4.1', serverStarted: 200 }), false);
   // A restart retry: the restart is the whole operation.
   assert.equal(watchFinished({ ...base, installsFrom: null }, { current: '2.5.4.1', serverStarted: 200, installs: 3 }), true);
+});
+
+test('a reinstall whose count could not be saved is reported at once', () => {
+  const base = { target: '2.5.4.1', previous: '2.5.4.1', startedFrom: 100, sawPending: false, installsFrom: 3 };
+  assert.equal(watchUnconfirmable(base, { current: '2.5.4.1', serverStarted: 200, installs: -1 }), true);
+  assert.equal(watchUnconfirmable(base, { current: '2.5.4.1', serverStarted: 200, installs: 3 }), false); // keep waiting
+  assert.equal(watchUnconfirmable(base, { current: '2.5.4.1', serverStarted: 100, installs: -1 }), false); // not restarted yet
+  assert.equal(watchUnconfirmable({ ...base, installsFrom: null }, { current: '2.5.4.1', serverStarted: 200, installs: -1 }), false); // restart retry
+  assert.equal(watchUnconfirmable({ ...base, previous: '2.5.4' }, { current: '2.5.4.1', serverStarted: 200, installs: -1 }), false); // another version
 });

@@ -47,6 +47,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.LOCK_FILE = str(self.base / "update.lock")
         self.u.SERVICE_LOCK = str(self.base / "service.lock")
         self.u.INSTALL_COUNT = str(self.base / "update-count")
+        self.u.INSTALL_COUNT_FAILED = str(self.base / "update-count-failed")
         etc = self.base / "etc"
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
         write_script(pathlib.Path(self.u.STOP_SCRIPT),
@@ -969,6 +970,12 @@ class UpdateScriptTest(unittest.TestCase):
         path, digest = self.package("2.5.4.1")
         self.assert_rejected("nothing was stopped or changed", file=path, sha512=digest)
         self.assertNotIn("stop", self.calls())
+
+    def test_a_count_that_cannot_be_saved_is_reported(self):
+        pathlib.Path(self.u.INSTALL_COUNT).mkdir()
+        path, digest = self.package("2.5.4.1")
+        self.run_update(file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.INSTALL_COUNT_FAILED))
 
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"

@@ -57,7 +57,7 @@ fi
 RUN=(docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/src:ro")
 
 echo "== Builder image (docker/Dockerfile: pinned downloads, SDK build; cached layers are reused)"
-(cd "$ROOT" && make builder-image) > "$LOGS/builder.log" 2>&1 || { tail -30 "$LOGS/builder.log"; exit 1; }
+(cd "$ROOT" && make builder-image BUILDER_IID="$LOGS/builder-image-id") > "$LOGS/builder.log" 2>&1 || { tail -30 "$LOGS/builder.log"; exit 1; }
 
 echo "== Go"
 "${RUN[@]}" -e GOFLAGS=-mod=readonly -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath "$GO_IMAGE" sh -euc '

@@ -19,7 +19,7 @@ DOCKER_BUILD_ARGS := --build-arg DOCKER_UID=$(UID) --build-arg DOCKER_GID=$(GID)
 
 # The image ID builder-image produced, per checkout (akkijp fork): the builds below run that exact
 # image, so another checkout re-tagging $(IMAGE_NAME) meanwhile cannot swap the SDK under them.
-BUILDER_IID := $(PWD)/build/.builder-image-id
+BUILDER_IID ?= $(PWD)/build/.builder-image-id
 BUILDER := "$$(cat $(BUILDER_IID))"
 
 # Build commands
@@ -80,12 +80,12 @@ check-image: check-root
 # toolchain, Go or MaixCDK versions (akkijp fork).
 builder-image: check-root
 	@echo "Building Docker image..."
-	@mkdir -p build && docker build --platform linux/amd64 $(DOCKER_BUILD_ARGS) --iidfile $(BUILDER_IID) -t $(IMAGE_NAME) -f docker/Dockerfile ./
+	@mkdir -p "$(dir $(BUILDER_IID))" && docker build --platform linux/amd64 $(DOCKER_BUILD_ARGS) --iidfile $(BUILDER_IID) -t $(IMAGE_NAME) -f docker/Dockerfile ./
 
 # Force rebuild Docker image
 rebuild-image: check-root
 	@echo "Force rebuilding Docker image..."
-	@mkdir -p build && docker build --platform linux/amd64 --no-cache $(DOCKER_BUILD_ARGS) --iidfile $(BUILDER_IID) -t $(IMAGE_NAME) -f docker/Dockerfile ./
+	@mkdir -p "$(dir $(BUILDER_IID))" && docker build --platform linux/amd64 --no-cache $(DOCKER_BUILD_ARGS) --iidfile $(BUILDER_IID) -t $(IMAGE_NAME) -f docker/Dockerfile ./
 
 # Enter interactive shell (equivalent to build.sh with no arguments)
 shell: check-root builder-image

@@ -151,7 +151,12 @@ func installPreparedPackage(sourceDir string) error {
 	// between leaves "switching", which the page never takes as finished; counted after, it
 	// could leave a working reinstall that the page can never confirm.
 	if err := countInstall(); err != nil {
+		// The page could then never confirm a reinstall of the running version: say so (in /run,
+		// which still works when /etc cannot be written), and the API reports the count unknown.
 		log.Warnf("count the install: %v", err)
+		_ = os.WriteFile(installCountFailedPath, []byte(err.Error()+"\n"), 0o644)
+	} else {
+		_ = os.Remove(installCountFailedPath)
 	}
 	// Complete: only the restart is missing, which may now be retried.
 	record.Phase = phaseInstalled
@@ -163,16 +168,27 @@ func installPreparedPackage(sourceDir string) error {
 
 // installCountPath counts the updates installed on this device (the web updater and
 // update-nanokvm.py both add one each time "installed" is recorded).
-var installCountPath = "/etc/kvm/update-count"
+var (
+	installCountPath       = "/etc/kvm/update-count"
+	installCountFailedPath = "/run/nanokvm-update-count-failed"
+)
 
+// readInstallCount is the number of installs, 0 before the first one, or -1 when it is not
+// known: the last count could not be saved, or the file is there but unreadable.
 func readInstallCount() int64 {
+	if _, err := os.Lstat(installCountFailedPath); err == nil {
+		return -1
+	}
 	data, err := os.ReadFile(installCountPath)
-	if err != nil {
+	if os.IsNotExist(err) {
 		return 0
+	}
+	if err != nil {
+		return -1
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil || n < 0 {
-		return 0
+		return -1
 	}
 	return n
 }
@@ -184,7 +200,11 @@ func countInstall() error {
 		return err
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := fmt.Fprintf(tmp, "%d\n", readInstallCount()+1); err != nil {
+	current := readInstallCount()
+	if current < 0 {
+		current = 0 // start again from a broken count; the API reports it unknown until it is saved
+	}
+	if _, err := fmt.Fprintf(tmp, "%d\n", current+1); err != nil {
 		_ = tmp.Close()
 		return err
 	}

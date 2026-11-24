@@ -42,6 +42,18 @@ export function watchFinished(state: WatchState, reply: VersionReply): boolean {
   return reply.current !== state.previous;
 }
 
+// A reinstall of the running version that can never be confirmed: the server restarted into it
+// and nothing is pending, but the device says its install count is unknown (-1: it could not be
+// saved). The page then says so at once instead of waiting for its deadline.
+export function watchUnconfirmable(state: WatchState, reply: VersionReply): boolean {
+  if (reply.restartPending || state.installsFrom === null) return false;
+  if (state.target && reply.current !== state.target) return false;
+  const sameVersion = !state.previous || !state.target || state.target === state.previous;
+  const serverRestarted =
+    state.startedFrom > 0 && !!reply.serverStarted && reply.serverStarted !== state.startedFrom;
+  return sameVersion && serverRestarted && (reply.installs === -1 || state.installsFrom < 0);
+}
+
 // The watch survives the page: a restart changes the server's signing key, so the next query is
 // answered 401 and the user logs in again. Kept in sessionStorage (this tab only).
 export type SavedWatch = {

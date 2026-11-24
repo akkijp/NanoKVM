@@ -193,10 +193,13 @@ func usePendingTestPaths(t *testing.T) string {
 	t.Helper()
 	oldPath, oldCmd, oldDelay, oldPending := updateLockPath, restartCommand, restartDelay, restartPendingPath
 	dir := t.TempDir()
-	oldServiceLock, oldCount := serviceLockPath, installCountPath
+	oldServiceLock, oldCount, oldCountFailed := serviceLockPath, installCountPath, installCountFailedPath
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	installCountPath = filepath.Join(dir, "update-count")
-	t.Cleanup(func() { serviceLockPath, installCountPath = oldServiceLock, oldCount })
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
+	t.Cleanup(func() {
+		serviceLockPath, installCountPath, installCountFailedPath = oldServiceLock, oldCount, oldCountFailed
+	})
 	updateLockPath = filepath.Join(dir, "update.lock")
 	restartPendingPath = filepath.Join(dir, "restart-pending")
 	restartCommand = []string{"false"}
@@ -307,8 +310,11 @@ func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	oldCountForTest := installCountPath
 	installCountPath = filepath.Join(dir, "update-count")
+	oldCountFailedForTest := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
 	t.Cleanup(func() {
 		installTrashDir, serviceLockPath, installCountPath = oldTrashForTest, oldServiceLockForTest, oldCountForTest
+		installCountFailedPath = oldCountFailedForTest
 	})
 	t.Cleanup(func() { restartPendingPath, installAppDir, installBackupDir = oldPending, oldApp, oldBackup })
 	if err := os.MkdirAll(filepath.Join(dir, "new"), 0o755); err != nil {
@@ -529,8 +535,11 @@ func TestNewFilesAreSyncedBeforeInstalledIsRecorded(t *testing.T) {
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	oldCountForTest := installCountPath
 	installCountPath = filepath.Join(dir, "update-count")
+	oldCountFailedForTest := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
 	t.Cleanup(func() {
 		installTrashDir, serviceLockPath, installCountPath = oldTrashForTest, oldServiceLockForTest, oldCountForTest
+		installCountFailedPath = oldCountFailedForTest
 	})
 	var phaseAtSync string
 	syncFilesystems = func() error {
@@ -573,8 +582,11 @@ func TestFailedSyncKeepsSwitching(t *testing.T) {
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	oldCountForTest := installCountPath
 	installCountPath = filepath.Join(dir, "update-count")
+	oldCountFailedForTest := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
 	t.Cleanup(func() {
 		installTrashDir, serviceLockPath, installCountPath = oldTrashForTest, oldServiceLockForTest, oldCountForTest
+		installCountFailedPath = oldCountFailedForTest
 	})
 	syncFilesystems = func() error { return fmt.Errorf("cannot fork") }
 	t.Cleanup(func() {
@@ -656,8 +668,11 @@ func TestWriteBackErrorKeepsSwitching(t *testing.T) {
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	oldCountForTest := installCountPath
 	installCountPath = filepath.Join(dir, "update-count")
+	oldCountFailedForTest := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
 	t.Cleanup(func() {
 		installTrashDir, serviceLockPath, installCountPath = oldTrashForTest, oldServiceLockForTest, oldCountForTest
+		installCountFailedPath = oldCountFailedForTest
 	})
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, fsyncPath = oldPending, oldApp, oldBackup, oldFsync
@@ -799,7 +814,11 @@ func TestInstallRefusesWhenTheInstalledVersionCannotBeRead(t *testing.T) {
 	oldServiceLock2, oldCount2 := serviceLockPath, installCountPath
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	installCountPath = filepath.Join(dir, "update-count")
-	t.Cleanup(func() { serviceLockPath, installCountPath = oldServiceLock2, oldCount2 })
+	oldCountFailed2 := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
+	t.Cleanup(func() {
+		serviceLockPath, installCountPath, installCountFailedPath = oldServiceLock2, oldCount2, oldCountFailed2
+	})
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
 	})
@@ -923,7 +942,11 @@ func TestInstallRefusesAnEmptyVersionFile(t *testing.T) {
 	oldServiceLock2, oldCount2 := serviceLockPath, installCountPath
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	installCountPath = filepath.Join(dir, "update-count")
-	t.Cleanup(func() { serviceLockPath, installCountPath = oldServiceLock2, oldCount2 })
+	oldCountFailed2 := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
+	t.Cleanup(func() {
+		serviceLockPath, installCountPath, installCountFailedPath = oldServiceLock2, oldCount2, oldCountFailed2
+	})
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
 	})
@@ -972,7 +995,11 @@ func TestRestoreWithoutAVersionFileClearsTheRecord(t *testing.T) {
 	oldServiceLock2, oldCount2 := serviceLockPath, installCountPath
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	installCountPath = filepath.Join(dir, "update-count")
-	t.Cleanup(func() { serviceLockPath, installCountPath = oldServiceLock2, oldCount2 })
+	oldCountFailed2 := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
+	t.Cleanup(func() {
+		serviceLockPath, installCountPath, installCountFailedPath = oldServiceLock2, oldCount2, oldCountFailed2
+	})
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir = oldPending, oldApp, oldBackup, oldTrash
 	})
@@ -1047,7 +1074,9 @@ func TestInstallWaitsForTheServiceLock(t *testing.T) {
 	installTrashDir, serviceLockPath = filepath.Join(dir, ".kvm-update", "old.removing"), filepath.Join(dir, "service.lock")
 	oldCountHand := installCountPath
 	installCountPath = filepath.Join(dir, "update-count")
-	t.Cleanup(func() { installCountPath = oldCountHand })
+	oldCountFailedHand := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
+	t.Cleanup(func() { installCountPath, installCountFailedPath = oldCountHand, oldCountFailedHand })
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath = oldPending, oldApp, oldBackup, oldTrash, oldLock
 	})
@@ -1339,7 +1368,9 @@ func TestBusyServiceLockKeepsThePreviousBackup(t *testing.T) {
 	installTrashDir, serviceLockPath = filepath.Join(dir, ".kvm-update", "old.removing"), filepath.Join(dir, "service.lock")
 	oldCountHand := installCountPath
 	installCountPath = filepath.Join(dir, "update-count")
-	t.Cleanup(func() { installCountPath = oldCountHand })
+	oldCountFailedHand := installCountFailedPath
+	installCountFailedPath = filepath.Join(dir, "update-count-failed")
+	t.Cleanup(func() { installCountPath, installCountFailedPath = oldCountHand, oldCountFailedHand })
 	serviceLockWait = 300 * time.Millisecond
 	t.Cleanup(func() {
 		restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath, serviceLockWait = oldPending, oldApp, oldBackup, oldTrash, oldLock, oldWait
@@ -1406,4 +1437,67 @@ func TestWifiRequestConsumedDuringTheMove(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(dst, "server", "NanoKVM-Server")); err != nil {
 		t.Fatal("a real file was not moved")
 	}
+}
+
+func TestConfirmingDoesNotDependOnTheWallClock(t *testing.T) {
+	usePendingTestPaths(t)
+	oldStart, oldAtStart := processStart, recordAtStart
+	t.Cleanup(func() { processStart, recordAtStart = oldStart, oldAtStart })
+	if err := writePending(pendingRecord{From: "2.5.4.1", To: "2.5.4.2", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	// The clock was set back after the update: the record looks written after this server started.
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(restartPendingPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	processStart = time.Now()
+	noteRecordAtStart() // this server found the record at its start: it is the restarted one
+	record, _ := readPending()
+	if got := reportedPhase(record); got != phaseConfirming {
+		t.Fatalf("phase %q, want confirming", got)
+	}
+	// A retry while confirming does nothing.
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/application/update/restart", nil)
+	(&Service{}).RetryRestart(c)
+	if !strings.Contains(w.Body.String(), `"restarting":false`) {
+		t.Fatalf("retry while confirming: %s", w.Body.String())
+	}
+	// A record written later (another install) is not the one found at the start.
+	if err := writePending(pendingRecord{From: "2.5.4.2", To: "2.5.4.3", Phase: phaseInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(restartPendingPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	record, _ = readPending()
+	if got := reportedPhase(record); got == phaseConfirming {
+		t.Fatal("a newer record must not count as the one this server started with")
+	}
+}
+
+func TestAFailedInstallCountIsReported(t *testing.T) {
+	dir := usePendingTestPaths(t)
+	if readInstallCount() != 0 {
+		t.Fatal("no count yet must read 0")
+	}
+	// /etc/kvm/update-count is a directory: the count cannot be saved.
+	if err := os.MkdirAll(installCountPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if readInstallCount() != -1 {
+		t.Fatal("an unreadable count must read -1")
+	}
+	if err := countInstall(); err == nil {
+		t.Fatal("saving over a directory must fail")
+	}
+	_ = os.WriteFile(installCountFailedPath, []byte("x\n"), 0o644)
+	_ = os.Remove(installCountPath)
+	if readInstallCount() != -1 {
+		t.Fatal("after a failed count the API must say unknown")
+	}
+	_ = dir
 }

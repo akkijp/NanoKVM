@@ -59,6 +59,7 @@ LOCK_FILE = "/run/nanokvm-update.lock"
 SERVICE_LOCK = "/run/nanokvm-service.lock"
 # How many updates were installed (shared with the web updater; shown to the page).
 INSTALL_COUNT = "/etc/kvm/update-count"
+INSTALL_COUNT_FAILED = "/run/nanokvm-update-count-failed"  # the last count could not be saved
 # The installed init script stops the running app. The new app is started with
 # its own script, so its first start already runs the fork's boot steps.
 STOP_SCRIPT = "/etc/init.d/S95nanokvm"
@@ -1028,8 +1029,18 @@ def install_locked(version: str, reboots: str, previous: str, service_lock) -> N
     # leaves "switching", never a working reinstall that the page cannot confirm.
     try:
         count_install()
+        try:
+            os.remove(INSTALL_COUNT_FAILED)
+        except OSError:
+            pass
     except OSError as e:
+        # The page could then never confirm a reinstall of the running version: say so in /run.
         say(f"warning: could not count the install in {INSTALL_COUNT} ({e})")
+        try:
+            with open(INSTALL_COUNT_FAILED, "w") as f:
+                f.write(f"{e}\n")
+        except OSError:
+            pass
     try:
         set_restart_pending("installed", previous, version)  # complete; only the restart is missing
     except OSError as e:

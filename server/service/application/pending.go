@@ -107,9 +107,14 @@ func reportedPhase(record pendingRecord) string {
 	}
 	// S95nanokvm clears the record 15 s after starting both daemons. If it is still there well
 	// after this server started, a daemon did not stay up: the restart may be retried.
-	if info, err := os.Stat(restartPendingPath); err == nil && processStart.After(info.ModTime()) &&
-		time.Since(processStart) < confirmDeadline {
-		return phaseConfirming
+	// This server is the restarted one when the record is the very file it found at its start
+	// (the record is replaced by rename, so a new write is a new file), or, failing that, when it
+	// started after the record was written. The first does not depend on the wall clock, which
+	// may be set back after an update. The deadline is measured on the monotonic clock.
+	if info, err := os.Stat(restartPendingPath); err == nil && time.Since(processStart) < confirmDeadline {
+		if (recordAtStart != nil && os.SameFile(recordAtStart, info)) || processStart.After(info.ModTime()) {
+			return phaseConfirming
+		}
 	}
 	if isRestartUnderWay() {
 		return phaseRestarting // this (old) server is about to be restarted
@@ -256,11 +261,23 @@ func readVersionFile(dir string) string {
 // stopped while replacing /kvmapp ("switching", or a record that cannot be read). An "installed"
 // record is fine: that is the restart the update asked for.
 func CheckStartAllowed() error {
+	noteRecordAtStart()
 	record, pending := readPending()
 	if pending && record.Phase != phaseInstalled {
 		return fmt.Errorf("an earlier update stopped while replacing /kvmapp (%s); recover as described in FORK.md", restartPendingPath)
 	}
 	return nil
+}
+
+// recordAtStart is the pending record as this server found it when it started (nil: none).
+var recordAtStart os.FileInfo
+
+func noteRecordAtStart() {
+	if info, err := os.Stat(restartPendingPath); err == nil {
+		recordAtStart = info
+	} else {
+		recordAtStart = nil
+	}
 }
 
 // refuseWhilePending answers an update request while an earlier update is unfinished: nothing is
