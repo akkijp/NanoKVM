@@ -1303,3 +1303,41 @@ func TestOnlineUpdateEndToEnd(t *testing.T) {
 		})
 	}
 }
+
+func TestBusyServiceLockKeepsThePreviousBackup(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash, oldLock, oldWait := restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath, serviceLockWait
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installTrashDir, serviceLockPath = filepath.Join(dir, ".kvm-update", "old.removing"), filepath.Join(dir, "service.lock")
+	serviceLockWait = 300 * time.Millisecond
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath, serviceLockWait = oldPending, oldApp, oldBackup, oldTrash, oldLock, oldWait
+	})
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"):           "2.5.4.1\n",
+		filepath.Join(installBackupDir, "server", "keep"): "previous backup",
+		filepath.Join(dir, "new", "version"):              "2.5.4.2\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := os.OpenFile(serviceLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil || !strings.Contains(err.Error(), "service operation") {
+		t.Fatalf("got %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(installBackupDir, "server", "keep")); string(got) != "previous backup" {
+		t.Fatal("the previous backup was removed although nothing was installed")
+	}
+}

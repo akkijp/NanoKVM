@@ -113,11 +113,14 @@ test('an update refused because a newer release appeared leaves nothing to resum
   await waitFor(() => expect(setIsLocked).toHaveBeenLastCalledWith(false));
   expect(sessionStorage.getItem('nanokvm-update-watch')).toBeNull();
 
-  // Opening the page again does not resume a watch for the update that never started.
+  // Opening the page again does not resume a watch for the update that never started: it asks
+  // for the version afresh and offers the update, unlocked.
   unmount();
   setIsLocked.mockClear();
-  render(<Update setIsLocked={setIsLocked} />);
-  await waitFor(() => expect(api.getVersion).toHaveBeenCalled());
+  vi.mocked(api.getVersion).mockClear();
+  const again = render(<Update setIsLocked={setIsLocked} />);
+  await waitFor(() => expect(api.getVersion).toHaveBeenCalledTimes(1));
+  await again.findByText('settings.update.confirm');
   expect(setIsLocked).not.toHaveBeenCalledWith(true);
 });
 

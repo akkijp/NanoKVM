@@ -42,6 +42,11 @@ if git -C "$CHECKOUT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     COPY="$(mktemp -d)/NanoKVM"
     git -C "$CHECKOUT" worktree add -q --detach "$COPY" HEAD
     ROOT="$COPY"
+    # This script decides what is checked: it must be the committed one too.
+    if ! cmp -s "$0" "$ROOT/scripts/fork-test.sh"; then
+        echo "[ERROR] scripts/fork-test.sh differs from HEAD; commit it (or run the committed one)" >&2
+        exit 1
+    fi
     echo "== Testing $(git -C "$ROOT" rev-parse --short HEAD)"
 else
     echo "[WARN] not a git checkout: testing the files as they are, without the release stage" >&2

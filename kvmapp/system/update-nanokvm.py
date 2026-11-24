@@ -872,16 +872,9 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
             "then start with /etc/init.d/S95nanokvm start, or write the microSD card again)"
         )
 
-    # The previous backup goes first, with nothing recorded yet: if this is cut short, /kvmapp is
-    # still whole and the next boot starts it normally.
-    try:
-        remove_previous_backup()
-    except OSError as e:
-        drop_stage()
-        outcome = restart_previous(STOP_SCRIPT)
-        raise UpdateError(f"could not remove the previous backup {BACKUP_DIR} ({e}); nothing was installed, and {outcome}")
-    # From "switching" until "installed", hold S95nanokvm's service lock: a restart started
-    # elsewhere must not start from a half-switched /kvmapp. The restart below comes after.
+    # Hold S95nanokvm's service lock from here until "installed": a restart started elsewhere must
+    # not start from a half-switched /kvmapp. Taken before anything changes, so an abort here
+    # leaves even the previous backup alone. The restart below comes after.
     service_lock = lock_service_operations()
     try:
         # A start that slipped in between the stop and this lock would leave the old daemons
@@ -893,6 +886,15 @@ def switch_and_start(version: str, reboots: str, previous: str) -> None:
                 "the service was started again after it had been stopped; nothing was changed "
                 "(the previous version keeps running). Try the update again"
             )
+        # The previous backup goes next, with nothing recorded yet: if this is cut short, /kvmapp
+        # is still whole and the next boot starts it normally.
+        try:
+            remove_previous_backup()
+        except OSError as e:
+            service_lock.close()  # S95nanokvm needs it to start the previous version
+            drop_stage()
+            outcome = restart_previous(STOP_SCRIPT)
+            raise UpdateError(f"could not remove the previous backup {BACKUP_DIR} ({e}); nothing was installed, and {outcome}")
         install_locked(version, reboots, previous, service_lock)
     finally:
         service_lock.close()

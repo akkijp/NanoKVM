@@ -86,20 +86,21 @@ func installPreparedPackage(sourceDir string) error {
 	if err := fsyncTree(sourceDir); err != nil {
 		return fmt.Errorf("write the new version to disk: %w", err)
 	}
+	// Hold S95nanokvm's service lock from here until "installed": a restart started elsewhere
+	// (e.g. a TLS change) must neither stop this server half-way nor start from a half-switched
+	// /kvmapp. Taken before anything changes, so a busy lock leaves even the previous backup
+	// alone. The restart this update asks for comes after the lock is released.
+	releaseService, err := lockServiceOperations()
+	if err != nil {
+		return err
+	}
+	defer releaseService()
 	// The previous backup is renamed away and removed with nothing recorded yet: if this is cut
 	// short, /kvmapp is whole and the next boot starts it; the leftover is finished next time
 	// (here or by update-nanokvm.py, which uses the same place).
 	if err := removePreviousBackup(); err != nil {
 		return fmt.Errorf("failed to remove backup: %w", err)
 	}
-	// From "switching" until "installed", hold S95nanokvm's service lock: a restart started
-	// elsewhere (e.g. a TLS change) must neither stop this server half-way nor start from a
-	// half-switched /kvmapp. The restart this update asks for comes after the lock is released.
-	releaseService, err := lockServiceOperations()
-	if err != nil {
-		return err
-	}
-	defer releaseService()
 	if err := writePending(record); err != nil {
 		// Nothing was moved. A record that became visible before the failure would stop the next
 		// boot: take it back.
@@ -184,7 +185,10 @@ var syncFilesystems = func() error {
 }
 
 // serviceLockPath is the lock S95nanokvm takes for every service operation (start/stop/restart).
-var serviceLockPath = "/run/nanokvm-service.lock"
+var (
+	serviceLockPath = "/run/nanokvm-service.lock"
+	serviceLockWait = 30 * time.Second
+)
 
 // lockServiceOperations waits up to 30 s for S95nanokvm's lock and returns its release.
 func lockServiceOperations() (func(), error) {
@@ -192,7 +196,7 @@ func lockServiceOperations() (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open the service lock: %w", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(serviceLockWait)
 	for {
 		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 			return func() { _ = file.Close() }, nil

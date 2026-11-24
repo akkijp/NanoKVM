@@ -866,8 +866,12 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.lock_service_operations = lock
         # The daemons are gone at the stop, but running again once the lock is taken.
         self.u.running = lambda name: state["locked"]
+        self.complete_app(self.u.BACKUP_DIR)
+        (pathlib.Path(self.u.BACKUP_DIR) / "keep").write_text("previous backup")
         path, digest = self.package("2.5.4.1")
         self.assert_rejected("started again after it had been stopped", file=path, sha512=digest)
+        # Nothing was changed, the previous backup included.
+        self.assertEqual((pathlib.Path(self.u.BACKUP_DIR) / "keep").read_text(), "previous backup")
         self.assertFalse(os.path.exists(self.u.RESTART_PENDING))
         self.assertFalse(os.path.exists(self.u.STAGE_DIR))
 
