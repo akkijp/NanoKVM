@@ -46,6 +46,7 @@ class UpdateScriptTest(unittest.TestCase):
         self.u.WORK_PARENT = str(self.base / "root/.kvm-update")
         self.u.LOCK_FILE = str(self.base / "update.lock")
         self.u.SERVICE_LOCK = str(self.base / "service.lock")
+        self.u.INSTALL_COUNT = str(self.base / "update-count")
         etc = self.base / "etc"
         self.u.STOP_SCRIPT = str(etc / "init.d/S95nanokvm")
         write_script(pathlib.Path(self.u.STOP_SCRIPT),
@@ -80,6 +81,9 @@ class UpdateScriptTest(unittest.TestCase):
         for core in ("server/NanoKVM-Server", "kvm_system/kvm_system"):
             (path / core).parent.mkdir(parents=True, exist_ok=True)
             (path / core).write_text("x")
+        init = path / "system/init.d/S95nanokvm"
+        if not init.exists():
+            write_script(init, OK_SCRIPT)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -898,6 +902,40 @@ class UpdateScriptTest(unittest.TestCase):
                     else:
                         path.write_text(value + "\n" if value else "")
                 self.assertEqual(self.u.boot_statuses_ok(recovering), ok)
+
+    def test_half_moved_app_from_an_upstream_web_update_keeps_the_backup(self):
+        # Upstream moved /kvmapp to /root/old in name order and stopped after kvm_system/ and
+        # server/: the daemons are on both sides (copied back by hand or a retry), but system/
+        # and version are only in /root/old.
+        self.complete_app(self.u.BACKUP_DIR)
+        (pathlib.Path(self.u.BACKUP_DIR) / "version").write_text("2.5.4\n")
+        app = pathlib.Path(self.u.APP_DIR)
+        (app / "version").unlink()
+        shutil.rmtree(app / "system" / "init.d")
+        before = sorted(str(p.relative_to(self.u.BACKUP_DIR)) for p in pathlib.Path(self.u.BACKUP_DIR).rglob("*"))
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "incomplete"):
+            self.run_update(file=path, sha512=digest)
+        after = sorted(str(p.relative_to(self.u.BACKUP_DIR)) for p in pathlib.Path(self.u.BACKUP_DIR).rglob("*"))
+        self.assertEqual(before, after)
+        self.assertNotIn("stop", self.calls())  # refused before anything was stopped
+
+    def test_version_only_in_the_backup_is_refused(self):
+        self.complete_app(self.u.BACKUP_DIR)
+        (pathlib.Path(self.u.BACKUP_DIR) / "version").write_text("2.5.4\n")
+        (pathlib.Path(self.u.APP_DIR) / "version").unlink()
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, r"version \(it is in the backup\)"):
+            self.run_update(file=path, sha512=digest)
+        self.assertFalse((pathlib.Path(self.u.APP_DIR) / "version").exists())
+        self.assertTrue((pathlib.Path(self.u.BACKUP_DIR) / "version").exists())
+
+    def test_each_install_is_counted(self):
+        for n, version in enumerate(("2.5.4.1", "2.5.4.1"), start=1):
+            path, digest = self.package(version)
+            self.run_update(file=path, sha512=digest)
+            self.assertEqual(pathlib.Path(self.u.INSTALL_COUNT).read_text(), f"{n}\n")
+            pathlib.Path(self.u.RESTART_PENDING).unlink(missing_ok=True)
 
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"

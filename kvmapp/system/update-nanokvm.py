@@ -57,6 +57,8 @@ SERVICE_LOG = "/root/.kvm-update/service.log"
 LOCK_FILE = "/run/nanokvm-update.lock"
 # S95nanokvm's lock for every service operation; held from "switching" to "installed".
 SERVICE_LOCK = "/run/nanokvm-service.lock"
+# How many updates were installed (shared with the web updater; shown to the page).
+INSTALL_COUNT = "/etc/kvm/update-count"
 # The installed init script stops the running app. The new app is started with
 # its own script, so its first start already runs the fork's boot steps.
 STOP_SCRIPT = "/etc/init.d/S95nanokvm"
@@ -489,7 +491,7 @@ def migration_reboots(new_init_script: str) -> str:
 # version file is not: upstream servers treat a missing one as 1.0.0, so very old devices may
 # lack it; a version file that exists but cannot be read is still refused, see
 # read_previous_version.)
-APP_CORE_FILES = ("server/NanoKVM-Server", "kvm_system/kvm_system")
+APP_CORE_FILES = ("server/NanoKVM-Server", "kvm_system/kvm_system", "system/init.d/S95nanokvm")
 
 
 def boot_statuses_ok(recovering_to_from: bool) -> bool:
@@ -539,11 +541,18 @@ def check_not_interrupted() -> None:
                 "to work. Nothing was changed. Recover as described in FORK.md"
             )
     missing = [f for f in APP_CORE_FILES if not os.path.isfile(os.path.join(APP_DIR, f))]
+    # Upstream's web updater moves file by file in name order: cut short after the daemons, the
+    # version file can already be in /root/old while /kvmapp lacks it. /root/old is then the only
+    # whole copy and must not be replaced by the half-moved /kvmapp.
+    if os.path.isfile(os.path.join(BACKUP_DIR, "version")) and not os.path.lexists(os.path.join(APP_DIR, "version")):
+        missing.append("version (it is in the backup)")
     backup_partial = os.path.lexists(BACKUP_DIR) and not only_dirs(BACKUP_DIR) and not all(
         os.path.isfile(os.path.join(BACKUP_DIR, f)) for f in APP_CORE_FILES)
     if missing or backup_partial:
         raise UpdateError(
-            f"{APP_DIR} or {BACKUP_DIR} is incomplete (another update is running, or an earlier one "
+            f"{APP_DIR} or {BACKUP_DIR} is incomplete"
+            + (f" ({APP_DIR} lacks: {', '.join(missing)})" if missing else "")
+            + " (another update is running, or an earlier one "
             f"was interrupted). Nothing was changed; {BACKUP_DIR} and {STAGE_DIR} are kept. "
             "Wait for a running web update to finish, or recover as described in FORK.md"
         )
@@ -703,6 +712,34 @@ def write_all(fd: int, data: bytes) -> None:
         if written <= 0:
             raise OSError("short write")
         view = view[written:]
+
+
+def count_install() -> None:
+    """Add one to the install counter, atomically (a page that reinstalled the running version
+    sees it grow and knows the install happened)."""
+    try:
+        with open(INSTALL_COUNT) as f:
+            count = int(f.read().strip())
+        if count < 0:
+            count = 0
+    except (OSError, ValueError):
+        count = 0
+    directory = os.path.dirname(INSTALL_COUNT)
+    fd, tmp = tempfile.mkstemp(prefix=".update-count.", dir=directory)
+    try:
+        try:
+            os.fchmod(fd, 0o644)
+            write_all(fd, f"{count + 1}\n".encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, INSTALL_COUNT)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def set_restart_pending(phase: str, old: str, new: str) -> None:
@@ -998,6 +1035,10 @@ def install_locked(version: str, reboots: str, previous: str, service_lock) -> N
             f"{version} was put in place, but its record could not be saved ({e}); it was not started. "
             f"Check {RESTART_PENDING} and recover as described in FORK.md"
         )
+    try:
+        count_install()
+    except OSError as e:
+        say(f"warning: could not count the install in {INSTALL_COUNT} ({e})")
 
 
 

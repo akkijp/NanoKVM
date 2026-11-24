@@ -36,7 +36,9 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   const watchSawPendingRef = useRef(false);
   const watchPreviousRef = useRef('');
   // The version and server start time taken right before the current request (ensureBaseline).
-  const baselineRef = useRef({ version: '', started: 0 });
+  const baselineRef = useRef({ version: '', started: 0, installs: -1 });
+  // The install count to compare against; null while watching a restart retry.
+  const watchInstallsFromRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -45,7 +47,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     // again): resume it, so the result is still confirmed and the new page loaded.
     const saved = loadWatch();
     if (saved && Date.now() < saved.until) {
-      baselineRef.current = { version: saved.previous, started: saved.startedFrom };
+      baselineRef.current = { version: saved.previous, started: saved.startedFrom, installs: saved.installsFrom ?? -1 };
+      watchInstallsFromRef.current = saved.installsFrom;
       watchTargetRef.current = saved.target;
       watchStartedFromRef.current = saved.startedFrom;
       watchPreviousRef.current = saved.previous;
@@ -97,7 +100,8 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
             target: watchTargetRef.current,
             previous: watchPreviousRef.current,
             startedFrom: watchStartedFromRef.current,
-            sawPending: watchSawPendingRef.current
+            sawPending: watchSawPendingRef.current,
+            installsFrom: watchInstallsFromRef.current
           };
           if (watchFinished(state, rsp.data)) {
             const bootFailed =
@@ -252,7 +256,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       setErrMsg(message);
     };
 
-    rememberWatch(latestVersion);
+    rememberWatch(latestVersion, 'restart');
     api
       .retryRestart()
       .then((rsp: any) => {
@@ -267,7 +271,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           checkForUpdates();
           return;
         }
-        watchRestart(latestVersion); // the pending version
+        watchRestart(latestVersion, 'restart'); // the pending version
       })
       .catch((error: any) => {
         const code = error?.response?.status;
@@ -276,7 +280,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
           return;
         }
         // No answer, or a gateway error: the retry may have been accepted. Find out by watching.
-        watchRestart(latestVersion);
+        watchRestart(latestVersion, 'restart');
       });
   }
 
@@ -294,7 +298,11 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
       .then((rsp: any) => {
         const data = rsp?.data;
         if (rsp?.code !== 0 || !data?.serverStarted) return false;
-        baselineRef.current = { version: data.current || '', started: data.serverStarted };
+        baselineRef.current = {
+          version: data.current || '',
+          started: data.serverStarted,
+          installs: typeof data.installs === 'number' ? data.installs : -1
+        };
         return true;
       })
       .catch(() => false);
@@ -302,24 +310,23 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
 
   // Store the watch (target, version and start time before the request) as soon as the request is
   // about to go out, so that a page reload or re-login while the device installs can resume it.
-  function rememberWatch(target: string) {
+  // kind: 'install' (an update or upload: the device counts one more install) or 'restart' (a
+  // restart retry: nothing is installed).
+  function rememberWatch(target: string, kind: 'install' | 'restart' = 'install') {
     saveWatch({
       target,
       previous: baselineRef.current.version,
       startedFrom: baselineRef.current.started,
+      installsFrom: kind === 'restart' ? null : baselineRef.current.installs,
       until: Date.now() + 10 * 60 * 1000
     });
   }
 
-  function watchRestart(target: string) {
+  function watchRestart(target: string, kind: 'install' | 'restart' = 'install') {
     // A reply that arrives after the tab was closed must not lock the settings again.
     if (!mountedRef.current) return;
-    saveWatch({
-      target,
-      previous: baselineRef.current.version,
-      startedFrom: baselineRef.current.started,
-      until: Date.now() + 10 * 60 * 1000
-    });
+    rememberWatch(target, kind);
+    watchInstallsFromRef.current = kind === 'restart' ? null : baselineRef.current.installs;
     watchTargetRef.current = target;
     watchStartedFromRef.current = baselineRef.current.started;
     watchSawPendingRef.current = false;

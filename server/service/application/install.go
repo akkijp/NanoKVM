@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -149,7 +150,55 @@ func installPreparedPackage(sourceDir string) error {
 	if err := writePending(record); err != nil {
 		return err
 	}
+	// Counted after the record: a page that reinstalled the running version sees the count move
+	// and knows the install happened (a restart alone, e.g. after a power cut, does not count).
+	if err := countInstall(); err != nil {
+		log.Warnf("count the install: %v", err)
+	}
 	return nil
+}
+
+// installCountPath counts the updates installed on this device (the web updater and
+// update-nanokvm.py both add one each time "installed" is recorded).
+var installCountPath = "/etc/kvm/update-count"
+
+func readInstallCount() int64 {
+	data, err := os.ReadFile(installCountPath)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func countInstall() error {
+	dir := filepath.Dir(installCountPath)
+	tmp, err := os.CreateTemp(dir, ".update-count.*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := fmt.Fprintf(tmp, "%d\n", readInstallCount()+1); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), installCountPath); err != nil {
+		return err
+	}
+	return syncDir(dir)
 }
 
 // syncFilesystems makes the switch durable: the files were already fsync'ed in the stage, so

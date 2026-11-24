@@ -17,6 +17,9 @@ type GetVersionRsp struct {
 	// akkijp fork: when this server process started (ms since the epoch). A page watching an
 	// update sees it change when the restart has really happened.
 	ServerStarted int64 `json:"serverStarted,omitempty"`
+	// akkijp fork: how many updates were installed on this device (/etc/kvm/update-count). A page
+	// that reinstalls the running version sees it grow when the install really happened.
+	Installs int64 `json:"installs"`
 }
 
 type GetPreviewRsp struct {
