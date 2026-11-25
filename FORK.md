@@ -53,12 +53,16 @@
 送るスクリプトは、手元の作業ツリーのものではなく、確かめたパッケージの中のものを使う（別のブランチの古い・上流の版を送らないため）。
 
 ```bash
-# 管理 PC で: パッケージの SHA-512 を latest.json と照合し、合ったパッケージからスクリプトを取り出す
-want=$(python3 -c 'import json;print(json.load(open("latest.json"))["sha512"])')
-got=$(openssl dgst -sha512 -binary nanokvm_2.5.4.1.tar.gz | base64 | tr -d '\n')
-[ "$want" = "$got" ] && echo OK || echo "一致しない: 止める"
-tar -xzf nanokvm_2.5.4.1.tar.gz nanokvm_2.5.4.1/system/update-nanokvm.py
-scp nanokvm_2.5.4.1.tar.gz nanokvm_2.5.4.1/system/update-nanokvm.py root@<機器>:/root/
+# 管理 PC で: パッケージの SHA-512 を latest.json と照合し、合ったときだけスクリプトを取り出して送る。
+# 照合に失敗したら（取れない・空・不一致）tar より前に止まる
+(
+  set -euo pipefail
+  want=$(python3 -c 'import json;print(json.load(open("latest.json"))["sha512"])')
+  got=$(openssl dgst -sha512 -binary nanokvm_2.5.4.1.tar.gz | base64 | tr -d '\n')
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then echo "SHA-512 が一致しない: 止める" >&2; exit 1; fi
+  tar -xzf nanokvm_2.5.4.1.tar.gz nanokvm_2.5.4.1/system/update-nanokvm.py
+  scp nanokvm_2.5.4.1.tar.gz nanokvm_2.5.4.1/system/update-nanokvm.py root@<機器>:/root/
+)
 # 機器で（まず --dry-run で確かめる）
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512> --dry-run
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512>

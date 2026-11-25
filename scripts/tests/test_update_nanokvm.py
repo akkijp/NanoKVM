@@ -1009,6 +1009,43 @@ class UpdateScriptTest(unittest.TestCase):
         self.run_update(file=path, sha512=digest)
         self.assertTrue(os.path.exists(self.u.INSTALL_COUNT_FAILED))
 
+    def test_restore_is_synced_before_the_record_goes(self):
+        events = []
+        real_fsync, real_clear = self.u.fsync_path, self.u.clear_restart_pending
+        self.u.fsync_path = lambda path: (events.append(("sync", path)), real_fsync(path))[1]
+        self.u.clear_restart_pending = lambda: (events.append(("clear",)), real_clear())[1]
+
+        def switch():
+            raise self.u.SwitchError("no space left", restored=True)
+
+        self.u.switch = switch
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaises(self.u.UpdateError):
+            self.run_update(file=path, sha512=digest)
+        clear_at = events.index(("clear",))
+        synced_before = {e[1] for e in events[:clear_at] if e[0] == "sync"}
+        self.assertIn(os.path.dirname(self.u.APP_DIR), synced_before)
+        self.assertIn(("sync", os.path.dirname(self.u.RESTART_PENDING)), events[clear_at:])
+
+    def test_restore_that_cannot_be_synced_keeps_the_record(self):
+        failed = {"switch": False}
+        real_fsync = self.u.fsync_path
+
+        def switch():
+            failed["switch"] = True
+            raise self.u.SwitchError("no space left", restored=True)
+
+        def fsync(path):
+            if failed["switch"]:
+                raise OSError(5, "I/O error")  # the card fails while the restore is synced
+            real_fsync(path)
+
+        self.u.switch, self.u.fsync_path = switch, fsync
+        path, digest = self.package("2.5.4.1")
+        with self.assertRaisesRegex(self.u.UpdateError, "writing that to the card failed"):
+            self.run_update(file=path, sha512=digest)
+        self.assertTrue(os.path.exists(self.u.RESTART_PENDING))
+
     def test_reboot_message_names_the_reason(self):
         self.u.migration_reboots = lambda new_init: "installs its own init script (S95nanokvm)"
         self.u.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=__import__("time").monotonic)

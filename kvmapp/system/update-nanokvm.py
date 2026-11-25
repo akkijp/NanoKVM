@@ -1084,11 +1084,24 @@ def install_locked(version: str, reboots: str, previous: str, service_lock) -> N
                 "are kept. Recover as described in FORK.md"
             )
         drop_stage()
-        # The previous version is back in place. Clearing the record and starting it again are
-        # independent: a failure of one must not skip the other.
+        # The previous version is back in place. Make that durable before the record goes: a
+        # record removed before the restore reached the card could leave, after a power cut, a
+        # "switching" record over a whole old version, or no record over a half-restored one.
+        try:
+            for directory in {os.path.dirname(APP_DIR), os.path.dirname(BACKUP_DIR)}:
+                fsync_path(directory)
+        except OSError as sync_error:
+            raise UpdateError(
+                f"could not put the new version in place ({e}); the previous version was put back, but "
+                f"writing that to the card failed ({sync_error}). {RESTART_PENDING} is kept and nothing "
+                "was started. Recover as described in FORK.md"
+            )
+        # Clearing the record and starting the previous version are independent: a failure of
+        # one must not skip the other.
         note = ""
         try:
             clear_restart_pending()
+            fsync_path(os.path.dirname(RESTART_PENDING))
         except OSError as remove_error:
             note = f" (the record {RESTART_PENDING} could not be removed: {remove_error})"
         service_lock.close()  # S95nanokvm needs it to start the previous version

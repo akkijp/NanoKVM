@@ -9,7 +9,7 @@ export type UpdateServerConfig = {
 // get application version
 // akkijp fork: local=true answers without asking GitHub (current version, start time, install count).
 export function getVersion(local = false) {
-  return http.get('/api/application/version', local ? { params: { local: 1 } } : undefined);
+  return http.get('/api/application/version', local ? { local: 1 } : undefined);
 }
 
 // update application to latest version

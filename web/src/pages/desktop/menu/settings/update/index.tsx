@@ -72,8 +72,10 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
     const requestId = ++versionRequestRef.current;
     setStatus('loading');
 
+    // While watching an update, ask the device alone: the latest version is not needed, and the
+    // query to GitHub could outlast a proxy timeout on a device without internet access.
     api
-      .getVersion()
+      .getVersion(reloadWhenSettledRef.current)
       .then((rsp: any) => {
         if (requestId !== versionRequestRef.current || !mountedRef.current) return;
         if (rsp.code !== 0 || !rsp.data) {
