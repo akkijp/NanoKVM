@@ -22,6 +22,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 SYSTEM_LIBS = HERE / "device-system-libs.txt"
 PROGRAMS = ("server/NanoKVM-Server", "kvm_system/kvm_system")
 DT_NEEDED, DT_STRTAB = 1, 5
+EM_RISCV = 243
 PT_LOAD, PT_DYNAMIC = 1, 2
 
 
@@ -29,6 +30,9 @@ def needed(data: bytes) -> list:
     """DT_NEEDED names of a 64-bit little-endian ELF (the device is riscv64)."""
     if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
         raise ValueError("not a 64-bit little-endian ELF")
+    machine, = struct.unpack_from("<H", data, 0x12)
+    if machine != EM_RISCV:
+        raise ValueError(f"built for another CPU (e_machine {machine}, the device is RISC-V {EM_RISCV})")
     phoff, = struct.unpack_from("<Q", data, 0x20)
     phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
     loads, dynamic = [], None

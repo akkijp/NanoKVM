@@ -59,10 +59,11 @@ capture_cards() {
 disable_audio_capture() {
     if [ -e /etc/kvm/enable-microphone ]; then
         # An unbound card only comes back with the driver at boot.
+        # A result that cannot be written counts as a failure (the update is confirmed only on it).
         if [ -n "$(capture_cards)" ]; then
-            echo "on" > /run/nanokvm-microphone
+            echo "on" > /run/nanokvm-microphone || return 1
         else
-            echo "off (enabled in /etc/kvm, reboot to turn it on)" > /run/nanokvm-microphone
+            echo "off (enabled in /etc/kvm, reboot to turn it on)" > /run/nanokvm-microphone || return 1
         fi
         return 0
     fi
@@ -79,7 +80,7 @@ disable_audio_capture() {
         logger -t nanokvm -p user.err "microphone could not be disabled (card $left)" 2>/dev/null || true
         return 1
     else
-        echo "off" > /run/nanokvm-microphone
+        echo "off" > /run/nanokvm-microphone || return 1
     fi
 }
 
@@ -109,8 +110,9 @@ disable_picoclaw() {
         fi
     fi
     # The result is in /run/nanokvm-picoclaw ("off" or "FAILED: ..."), shown by the web page.
+    # A result that cannot be written is a failure too: the update is confirmed only on "off".
     if [ "$picoclaw_status" -eq 0 ]; then
-        echo "off" > /run/nanokvm-picoclaw
+        echo "off" > /run/nanokvm-picoclaw || picoclaw_status=1
     else
         echo "FAILED: picoclaw could not be stopped or its init script disabled" > /run/nanokvm-picoclaw
     fi

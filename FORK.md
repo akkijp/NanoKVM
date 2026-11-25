@@ -81,6 +81,7 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 
 - 作業フォルダ `/root/.kvm-update` を `/root/old` と別のファイルシステムに置くと、2 回目の更新で前の控えの移動（`rename`）が `EXDEV` で失敗する（何も入れずに止まる）。既定の置き方（どちらも `/root`）では起きない
 - S95 のロックのテストは、ロック中に起動が呼ばれないことは見るが、停止が呼ばれないことまでは見ていない
+- Go の GitHub Releases のテストは、転送の前後でホスト名が変わる場合（実際の GitHub からアセットの配信先への転送）を試していない（Python のテストは試している）
 
 ### 「まだ動いたと確かめていない」記録（`/etc/kvm/update-restart-pending`）
 

@@ -1593,3 +1593,33 @@ func TestLocalVersionQueryDoesNotAskGitHub(t *testing.T) {
 		t.Fatalf("local answer: %s", w.Body.String())
 	}
 }
+
+func TestBackupDirectoryFailureLeavesNoRecord(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash, oldLock := restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir = filepath.Join(dir, "kvmapp")
+	// /root/old cannot be created: its parent is a file.
+	_ = os.WriteFile(filepath.Join(dir, "blocker"), []byte("x"), 0o644)
+	installBackupDir = filepath.Join(dir, "blocker", "old")
+	installTrashDir, serviceLockPath = filepath.Join(dir, ".kvm-update", "old.removing"), filepath.Join(dir, "service.lock")
+	t.Cleanup(func() {
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath = oldPending, oldApp, oldBackup, oldTrash, oldLock
+	})
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"): "2.5.4.1\n",
+		filepath.Join(dir, "new", "version"):    "2.5.4.2\n",
+	} {
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		_ = os.WriteFile(path, []byte(content), 0o644)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil {
+		t.Fatal("the install must fail")
+	}
+	if _, pending := readPending(); pending {
+		t.Fatal("a record was left over an untouched app")
+	}
+	if readVersionFile(installAppDir) != "2.5.4.1" {
+		t.Fatal("the current app changed")
+	}
+}

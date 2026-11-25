@@ -108,6 +108,11 @@ func installPreparedPackage(sourceDir string) error {
 	if err := removePreviousBackup(); err != nil {
 		return fmt.Errorf("failed to remove backup: %w", err)
 	}
+	// The backup directory is created before anything is recorded: failing to create it (e.g. no
+	// free inode) then leaves no record behind over an untouched app.
+	if err := os.MkdirAll(installBackupDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", installBackupDir, err)
+	}
 	if err := writePending(record); err != nil {
 		// Nothing was moved. A record that became visible before the failure would stop the next
 		// boot: take it back, durably.
@@ -117,7 +122,14 @@ func installPreparedPackage(sourceDir string) error {
 		return err
 	}
 	if err := backupCurrentApp(); err != nil {
-		return err // the old app may be partly moved: keep the record as "switching"
+		// Nothing moved yet (the backup holds no file): the app is untouched, take the record back
+		// so the next boot starts it. Otherwise it may be partly moved: keep "switching".
+		if removeIfOnlyDirs(installBackupDir) && restoreExactly(installAppDir, oldFiles) {
+			if takeErr := takeBackPending(); takeErr == nil {
+				return fmt.Errorf("%w; nothing was moved, the current version is unchanged", err)
+			}
+		}
+		return err
 	}
 
 	if err := applyUpdate(sourceDir); err != nil {
