@@ -48,6 +48,8 @@ type Manager struct {
 	transitioning       bool
 	lastError           string
 	changedAt           time.Time
+	// akkijp fork: picoclaw cannot be the mode (see newForkManager).
+	picoclawDisabled bool
 }
 
 var (
@@ -57,9 +59,17 @@ var (
 
 func GetManager() *Manager {
 	defaultManagerOnce.Do(func() {
-		defaultManager = NewManager(ModeFile, ModePicoclaw)
+		// akkijp fork: the picoclaw runtime cannot run in this build, so it never holds control:
+		// the default is off, and a saved "picoclaw" (e.g. from upstream) reads as off.
+		defaultManager = newForkManager(ModeFile)
 	})
 	return defaultManager
+}
+
+func newForkManager(path string) *Manager {
+	m := NewManager(path, ModeOff)
+	m.picoclawDisabled = true
+	return m
 }
 
 func NewManager(path string, defaultMode Mode) *Manager {
@@ -164,6 +174,9 @@ func (m *Manager) Switch(next Mode, preempt func() error) error {
 }
 
 func (m *Manager) SwitchWithCleanup(next Mode, preempt func() error, cleanup func() error) error {
+	if next == ModePicoclaw && m.picoclawDisabled {
+		return errors.New("the AI agent (picoclaw) is disabled in this build (akkijp fork)")
+	}
 	startedAt := time.Now()
 	timings := log.Fields{
 		"to": string(next),
@@ -455,6 +468,9 @@ func (m *Manager) loadLocked() error {
 		m.lastError = fmt.Sprintf("invalid AI control mode %q", strings.TrimSpace(string(data)))
 		m.cacheModeFileInfoLocked(info, data)
 		return nil
+	}
+	if mode == ModePicoclaw && m.picoclawDisabled {
+		mode = ModeOff
 	}
 	m.mode = mode
 	m.loaded = true

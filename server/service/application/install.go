@@ -96,6 +96,12 @@ func installPreparedPackage(sourceDir string) error {
 		return err
 	}
 	defer releaseService()
+	// The current files are listed before anything is recorded or removed: a read error here
+	// leaves everything as it was.
+	oldFiles, err := listFiles(installAppDir)
+	if err != nil {
+		return fmt.Errorf("list the current app: %w", err)
+	}
 	// The previous backup is renamed away and removed with nothing recorded yet: if this is cut
 	// short, /kvmapp is whole and the next boot starts it; the leftover is finished next time
 	// (here or by update-nanokvm.py, which uses the same place).
@@ -104,14 +110,11 @@ func installPreparedPackage(sourceDir string) error {
 	}
 	if err := writePending(record); err != nil {
 		// Nothing was moved. A record that became visible before the failure would stop the next
-		// boot: take it back.
-		_ = clearPending()
+		// boot: take it back, durably.
+		if takeErr := takeBackPending(); takeErr != nil {
+			return fmt.Errorf("%w; the record %s could not be taken back (%v): nothing was moved, so remove it by hand", err, restartPendingPath, takeErr)
+		}
 		return err
-	}
-	oldFiles, err := listFiles(installAppDir)
-	if err != nil {
-		_ = clearPending() // nothing has been moved yet
-		return fmt.Errorf("list the current app: %w", err)
 	}
 	if err := backupCurrentApp(); err != nil {
 		return err // the old app may be partly moved: keep the record as "switching"

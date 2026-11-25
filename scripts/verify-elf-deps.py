@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """akkijp fork: check that every shared library the packaged programs need is there.
 
-Reads the DT_NEEDED entries of the server, kvm_system and every library in server/dl_lib of a
-release tarball, following them through the libraries the package ships, and requires each one
-to be either shipped (server/dl_lib) or one of the device's own system libraries
-(scripts/device-system-libs.txt, taken from the device image). A library dropped from a later
-version is fine as long as nothing needs it any more.
+Reads the DT_NEEDED entries of the server and kvm_system of a release tarball, following them
+through the libraries the package ships, and requires each one to be found where that program
+finds it on the device:
+  - the server: server/dl_lib or the device's own system libraries;
+  - kvm_system: the system libraries only. It runs the first-start migration before the server's
+    libraries are in place (S95nanokvm), so it must not need any of server/dl_lib.
+The system libraries are listed in scripts/device-system-libs.txt (taken from the device image).
+A library dropped from a later version is fine as long as nothing needs it any more.
 
 Usage: scripts/verify-elf-deps.py <nanokvm_<version>.tar.gz>
        scripts/verify-elf-deps.py --unresolved <tarball>   (prints what is neither shipped nor listed)
@@ -87,22 +90,25 @@ def main() -> int:
         print(f"[ERROR] {args[0]}: missing {', '.join(missing)}", file=sys.stderr)
         return 1
     unresolved, seen = {}, set()
-    todo = list(PROGRAMS)
-    while todo:
-        rel = todo.pop()
-        if rel in seen:
-            continue
-        seen.add(rel)
-        try:
-            names = needed(files[rel])
-        except ValueError as e:
-            print(f"[ERROR] {rel}: {e}", file=sys.stderr)
-            return 1
-        for name in names:
-            if name in shipped:
-                todo.append(shipped[name])
-            elif name not in system:
-                unresolved.setdefault(name, []).append(rel)
+    # (program, where its libraries are found)
+    for program, search in (("server/NanoKVM-Server", shipped), ("kvm_system/kvm_system", {})):
+        todo, done = [program], set()
+        while todo:
+            rel = todo.pop()
+            if rel in done:
+                continue
+            done.add(rel)
+            seen.add(rel)
+            try:
+                names = needed(files[rel])
+            except ValueError as e:
+                print(f"[ERROR] {rel}: {e}", file=sys.stderr)
+                return 1
+            for name in names:
+                if name in search:
+                    todo.append(search[name])
+                elif name not in system:
+                    unresolved.setdefault(name, []).append(rel)
     if report:
         for name in sorted(unresolved):
             print(name)

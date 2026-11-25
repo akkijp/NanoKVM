@@ -50,9 +50,15 @@
 
 上流の 2.5.4 までの更新機能は 4 つの数字の名前を拒否し、取得先も上流のままなので、最初の 1 回は手で入れる。上流の画面の更新はこのスクリプトと排他しないので、画面の更新が動いていないことを確かめてから始め、終わるまで画面から更新しない（スクリプトも、アプリが入れ替え途中に見えたら何もせずに止まる）。
 
+送るスクリプトは、手元の作業ツリーのものではなく、確かめたパッケージの中のものを使う（別のブランチの古い・上流の版を送らないため）。
+
 ```bash
-# 管理 PC から
-scp nanokvm_2.5.4.1.tar.gz kvmapp/system/update-nanokvm.py root@<機器>:/root/
+# 管理 PC で: パッケージの SHA-512 を latest.json と照合し、合ったパッケージからスクリプトを取り出す
+want=$(python3 -c 'import json;print(json.load(open("latest.json"))["sha512"])')
+got=$(openssl dgst -sha512 -binary nanokvm_2.5.4.1.tar.gz | base64 | tr -d '\n')
+[ "$want" = "$got" ] && echo OK || echo "一致しない: 止める"
+tar -xzf nanokvm_2.5.4.1.tar.gz nanokvm_2.5.4.1/system/update-nanokvm.py
+scp nanokvm_2.5.4.1.tar.gz nanokvm_2.5.4.1/system/update-nanokvm.py root@<機器>:/root/
 # 機器で（まず --dry-run で確かめる）
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512> --dry-run
 python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <latest.json の sha512>
@@ -66,6 +72,11 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 - 新しい版の初回起動が HDMI のドライバーか起動台本（S95nanokvm）を入れ替えるときは、機器がそのまま再起動する（SSH は切れる）。上流の版からの最初の導入は起動台本が変わるので必ず再起動する（古い起動台本のまま新しい版を起動すると、マイクと picoclaw を切る処理が走らないため）。戻ってきたら、両デーモンの起動から 15 秒以上たってから次を確かめる: `cat /kvmapp/version` が入れた版、`pidof NanoKVM-Server && pidof kvm_system`（両方が動いている）、`cat /run/nanokvm-microphone /run/nanokvm-picoclaw` がどちらも `off`（`/etc/kvm/enable-microphone` を置いていなければ）、`/etc/kvm/update-restart-pending` が無い。どれかが違えば、更新は済んでいない（下の記録の節を見る）
 - 前回の更新が入れ替えの途中で止まっていた（`/kvmapp` が欠けている・`/root/old` が途中まで・記録が `switching`）ときは何もしない。下の「途中で止まったときの戻し方」で戻す
 - マイクを切れなかったときは、新しい版は動いたまま失敗（終了コード 1）として知らせる（`/run/nanokvm-microphone` に理由）
+
+### 既知の残り（2026-11-25 のレビューで見送った低いもの）
+
+- 作業フォルダ `/root/.kvm-update` を `/root/old` と別のファイルシステムに置くと、2 回目の更新で前の控えの移動（`rename`）が `EXDEV` で失敗する（何も入れずに止まる）。既定の置き方（どちらも `/root`）では起きない
+- S95 のロックのテストは、ロック中に起動が呼ばれないことは見るが、停止が呼ばれないことまでは見ていない
 
 ### 「まだ動いたと確かめていない」記録（`/etc/kvm/update-restart-pending`）
 

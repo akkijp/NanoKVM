@@ -75,6 +75,8 @@ test('a chosen package is sent once with its SHA-256 and its restart is watched'
   // The watch is stored before the upload goes out (a reload during the install can resume it).
   releaseBaseline();
 
+  // The baseline right before the upload comes from the device alone (no wait for GitHub).
+  expect(vi.mocked(api.getVersion).mock.calls[1][0]).toBe(true);
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   const [url, init] = fetchMock.mock.calls[0];
   expect(String(url)).toMatch(/\/api\/application\/update\/offline$/);

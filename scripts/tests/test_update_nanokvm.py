@@ -513,6 +513,36 @@ class UpdateScriptTest(unittest.TestCase):
         u.pids = lambda name: []
         self.assertFalse(u.daemons_run_app(start - 1))
 
+    def test_started_after_the_record_does_not_need_the_wall_clock(self):
+        u = load()
+        u.RESTART_PENDING = str(self.base / "pending")
+        proc = self.base / "proc"
+        (proc / "1").mkdir(parents=True)
+        (proc / "sys/kernel/random").mkdir(parents=True)
+        (proc / "sys/kernel/random/boot_id").write_text("boot-a\n")
+        (proc / "uptime").write_text("100.00 0\n")
+        tck = os.sysconf("SC_CLK_TCK")
+        fields = ["S"] + ["0"] * 18 + [str(50 * tck)] + ["0"] * 10  # started 50 s after boot
+        (proc / "1/stat").write_text("1 (srv) " + " ".join(fields) + "\n")
+        u.PROC = str(proc)
+        future = __import__("time").time() + 3600  # the clock was set back: the record looks newer
+        # Record written 10 s after boot in this boot: the process (50 s) started after it.
+        pathlib.Path(u.RESTART_PENDING + ".boot").write_text("boot-a 10.00\n")
+        self.assertTrue(u.started_after_record("1", future))
+        # Record written 80 s after boot: the process is older.
+        pathlib.Path(u.RESTART_PENDING + ".boot").write_text("boot-a 80.00\n")
+        self.assertFalse(u.started_after_record("1", 0))
+        # Record from an earlier boot: every process of this boot started after it.
+        pathlib.Path(u.RESTART_PENDING + ".boot").write_text("boot-z 999.00\n")
+        self.assertTrue(u.started_after_record("1", future))
+        # The age comes from the uptime too: up 50 s.
+        self.assertAlmostEqual(u.process_age("1"), 50.0, places=1)
+        # The mark is written with the record and removed with it.
+        u.set_restart_pending("switching", "2.5.4", "2.5.4.1")
+        self.assertEqual(pathlib.Path(u.RESTART_PENDING + ".boot").read_text().split(), ["boot-a", "100.00"])
+        u.clear_restart_pending()
+        self.assertFalse(os.path.exists(u.RESTART_PENDING + ".boot"))
+
     def test_daemons_up_only_briefly_do_not_count(self):
         u = load()
         u.APP_DIR = self.u.APP_DIR

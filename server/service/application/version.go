@@ -71,6 +71,17 @@ func (s *Service) GetVersion(c *gin.Context) {
 		return
 	}
 
+	// akkijp fork: ?local=1 answers from the device alone (current version, start time, install
+	// count), without asking GitHub: a page about to upload an offline update needs only that,
+	// and on a device without internet access the query to GitHub could outlast a proxy timeout.
+	if c.Query("local") == "1" {
+		rsp.OkRspWithData(c, &proto.GetVersionRsp{
+			ServerStarted: processStart.UnixMilli(), Installs: readInstallCount(),
+			Current: currentVersion, Microphone: microphone, Picoclaw: readPicoclawStatus(),
+		})
+		return
+	}
+
 	// latest version
 	latestVersion := ""
 	latest, err := getLatest()

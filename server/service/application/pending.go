@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -180,6 +181,7 @@ func writePending(record pendingRecord) error {
 	if err != nil {
 		return err
 	}
+	writeBootMark() // before the record (see update-nanokvm.py boot_mark)
 	dir := filepath.Dir(restartPendingPath)
 	tmp, err := os.CreateTemp(dir, ".update-restart-pending.*")
 	if err != nil {
@@ -229,7 +231,61 @@ func clearPending() error {
 	if err := os.Remove(restartPendingPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	_ = os.Remove(restartPendingPath + ".boot")
 	return nil
+}
+
+// bootIDPath and uptimePath are read for the boot mark written next to the record.
+var (
+	bootIDPath = "/proc/sys/kernel/random/boot_id"
+	uptimePath = "/proc/uptime"
+)
+
+// writeBootMark writes this boot's ID and the seconds since boot next to the record, so
+// update-nanokvm.py can tell a process started after the record without the wall clock.
+// Best effort: without it, the record's time is used.
+func writeBootMark() {
+	mark := restartPendingPath + ".boot"
+	if err := writeBootMarkTo(mark); err != nil {
+		_ = os.Remove(mark) // an older mark must not stay with a new record
+	}
+}
+
+func writeBootMarkTo(mark string) error {
+	id, err := os.ReadFile(bootIDPath)
+	if err != nil {
+		return err
+	}
+	up, err := os.ReadFile(uptimePath)
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(string(up))
+	if len(fields) == 0 {
+		return errors.New("empty uptime")
+	}
+	tmp := mark + ".tmp"
+	file, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintf(file, "%s %s\n", strings.TrimSpace(string(id)), fields[0])
+	serr := file.Sync()
+	cerr := file.Close()
+	if werr != nil || serr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		return errors.Join(werr, serr, cerr)
+	}
+	return os.Rename(tmp, mark)
+}
+
+// takeBackPending removes a record written for an update that moved nothing, and makes the
+// removal durable (a record that came back after a power cut would stop the next boot).
+func takeBackPending() error {
+	if err := clearPending(); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(restartPendingPath))
 }
 
 // readVersionFileStrict tells a missing version file ("", nil) from one that cannot be read.

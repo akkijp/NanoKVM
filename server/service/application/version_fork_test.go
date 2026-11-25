@@ -193,6 +193,9 @@ func usePendingTestPaths(t *testing.T) string {
 	t.Helper()
 	oldPath, oldCmd, oldDelay, oldPending := updateLockPath, restartCommand, restartDelay, restartPendingPath
 	dir := t.TempDir()
+	oldBootID, oldUptime := bootIDPath, uptimePath
+	bootIDPath, uptimePath = filepath.Join(dir, "no-boot-id"), filepath.Join(dir, "no-uptime")
+	t.Cleanup(func() { bootIDPath, uptimePath = oldBootID, oldUptime })
 	oldServiceLock, oldCount, oldCountFailed := serviceLockPath, installCountPath, installCountFailedPath
 	serviceLockPath = filepath.Join(dir, "service.lock")
 	installCountPath = filepath.Join(dir, "update-count")
@@ -318,6 +321,9 @@ func TestInstallRecordsThePendingRestartBeforeSwitching(t *testing.T) {
 	})
 	t.Cleanup(func() { restartPendingPath, installAppDir, installBackupDir = oldPending, oldApp, oldBackup })
 	if err := os.MkdirAll(filepath.Join(dir, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(installAppDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "new", "version"), []byte("2.5.4.2\n"), 0o644); err != nil {
@@ -1500,4 +1506,90 @@ func TestAFailedInstallCountIsReported(t *testing.T) {
 		t.Fatal("after a failed count the API must say unknown")
 	}
 	_ = dir
+}
+
+func TestRecordIsWrittenWithABootMark(t *testing.T) {
+	dir := usePendingTestPaths(t)
+	oldID, oldUp := bootIDPath, uptimePath
+	t.Cleanup(func() { bootIDPath, uptimePath = oldID, oldUp })
+	bootIDPath, uptimePath = filepath.Join(dir, "boot_id"), filepath.Join(dir, "uptime")
+	_ = os.WriteFile(bootIDPath, []byte("boot-a\n"), 0o644)
+	_ = os.WriteFile(uptimePath, []byte("123.45 0\n"), 0o644)
+	if err := writePending(pendingRecord{From: "2.5.4", To: "2.5.4.1", Phase: phaseSwitching}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(restartPendingPath + ".boot"); string(got) != "boot-a 123.45\n" {
+		t.Fatalf("boot mark %q", got)
+	}
+	if err := takeBackPending(); err != nil {
+		t.Fatal(err)
+	}
+	if _, pending := readPending(); pending {
+		t.Fatal("the record was not taken back")
+	}
+}
+
+func TestListingFailureChangesNothing(t *testing.T) {
+	dir := t.TempDir()
+	oldPending, oldApp, oldBackup, oldTrash, oldLock := restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath
+	restartPendingPath = filepath.Join(dir, "restart-pending")
+	installAppDir, installBackupDir = filepath.Join(dir, "kvmapp"), filepath.Join(dir, "old")
+	installTrashDir, serviceLockPath = filepath.Join(dir, ".kvm-update", "old.removing"), filepath.Join(dir, "service.lock")
+	t.Cleanup(func() {
+		_ = os.Chmod(filepath.Join(installAppDir, "server"), 0o755)
+		restartPendingPath, installAppDir, installBackupDir, installTrashDir, serviceLockPath = oldPending, oldApp, oldBackup, oldTrash, oldLock
+	})
+	for path, content := range map[string]string{
+		filepath.Join(installAppDir, "version"):           "2.5.4.1\n",
+		filepath.Join(installAppDir, "server", "bin"):     "x",
+		filepath.Join(installBackupDir, "server", "keep"): "previous backup",
+		filepath.Join(dir, "new", "version"):              "2.5.4.2\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can read an unreadable directory")
+	}
+	// A read error while listing the current app.
+	if err := os.Chmod(filepath.Join(installAppDir, "server"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPreparedPackage(filepath.Join(dir, "new")); err == nil {
+		t.Fatal("the install must fail")
+	}
+	if _, pending := readPending(); pending {
+		t.Fatal("a record was written")
+	}
+	if got, _ := os.ReadFile(filepath.Join(installBackupDir, "server", "keep")); string(got) != "previous backup" {
+		t.Fatal("the previous backup was removed")
+	}
+}
+
+func TestLocalVersionQueryDoesNotAskGitHub(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dir := usePendingTestPaths(t)
+	oldApp, oldBase := installAppDir, updateBaseURL
+	installAppDir = filepath.Join(dir, "kvmapp")
+	asked := false
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { asked = true }))
+	defer github.Close()
+	updateBaseURL = github.URL
+	t.Cleanup(func() { installAppDir, updateBaseURL = oldApp, oldBase })
+	_ = os.MkdirAll(installAppDir, 0o755)
+	_ = os.WriteFile(filepath.Join(installAppDir, "version"), []byte("2.5.4.1\n"), 0o644)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/application/version?local=1", nil)
+	(&Service{}).GetVersion(c)
+	if asked {
+		t.Fatal("the local query asked GitHub")
+	}
+	if !strings.Contains(w.Body.String(), `"current":"2.5.4.1"`) || !strings.Contains(w.Body.String(), `"serverStarted"`) {
+		t.Fatalf("local answer: %s", w.Body.String())
+	}
 }

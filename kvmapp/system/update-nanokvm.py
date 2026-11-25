@@ -633,6 +633,34 @@ def process_start(pid: str) -> float:
     return btime + ticks / os.sysconf("SC_CLK_TCK")
 
 
+def started_after_record(pid: str, record_mtime: float) -> bool:
+    """The process started after the record was written. With the boot mark: in a later boot, or
+    later in the same boot (seconds since boot); the wall clock is not needed. Without it, the
+    record's modification time is compared with the process start time."""
+    mark = read_boot_mark()
+    if mark is not None:
+        try:
+            if boot_id() != mark[0]:
+                return True
+            with open(f"{PROC}/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            return int(fields[19]) / os.sysconf("SC_CLK_TCK") > mark[1]
+        except (OSError, ValueError, IndexError):
+            return False
+    return process_start(pid) > record_mtime
+
+
+def process_age(pid: str) -> float:
+    """Seconds since the process started, from the seconds since boot (not the wall clock); the
+    wall clock only if the uptime cannot be read."""
+    with open(f"{PROC}/{pid}/stat") as f:
+        fields = f.read().rsplit(")", 1)[1].split()
+    try:
+        return uptime() - int(fields[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return time.time() - process_start(pid)
+
+
 def daemons_run_app(since: float) -> bool:
     """Both daemons run the binaries in /kvmapp (S95nanokvm starts copies in /tmp, so compare
     contents) and were started after `since`: not old processes left behind by a failed restart,
@@ -644,11 +672,10 @@ def daemons_run_app(since: float) -> bool:
         try:
             wanted = sha512_of(os.path.join(APP_DIR, rel))
             for pid in found:
-                started_at = process_start(pid)
                 # Started after the record, and up for at least START_STABLE seconds (the same
                 # check S95nanokvm makes before it clears the record).
-                if (sha512_of(f"{PROC}/{pid}/exe") != wanted or started_at <= since
-                        or time.time() - started_at < START_STABLE):
+                if (sha512_of(f"{PROC}/{pid}/exe") != wanted or not started_after_record(pid, since)
+                        or process_age(pid) < START_STABLE):
                     return False
         except (OSError, ValueError, IndexError, StopIteration):
             return False
@@ -741,12 +768,57 @@ def count_install() -> None:
         raise
 
 
+def boot_id() -> str:
+    with open(f"{PROC}/sys/kernel/random/boot_id") as f:
+        return f.read().strip()
+
+
+def uptime() -> float:
+    with open(f"{PROC}/uptime") as f:
+        return float(f.read().split()[0])
+
+
+def boot_mark() -> str:
+    """This boot's ID and the seconds since boot: written next to the record so "started after
+    the record" can be told without the wall clock (which may be set back by a restart)."""
+    return f"{boot_id()} {uptime():.2f}\n"
+
+
+def write_boot_mark() -> None:
+    mark_path = RESTART_PENDING + ".boot"
+    try:
+        mark = boot_mark()
+        tmp = mark_path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(mark)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, mark_path)
+    except (OSError, ValueError, IndexError):
+        # Without a mark the record's time is used (as before); an older mark must not stay.
+        try:
+            os.remove(mark_path)
+        except OSError:
+            pass
+
+
+def read_boot_mark():
+    """(boot_id, uptime) written with the record, or None."""
+    try:
+        with open(RESTART_PENDING + ".boot") as f:
+            boot_id, uptime = f.read().split()
+        return boot_id, float(uptime)
+    except (OSError, ValueError):
+        return None
+
+
 def set_restart_pending(phase: str, old: str, new: str) -> None:
     """Record, durably and atomically, that /kvmapp holds (or is about to hold) a version not yet
     seen running: a temporary file is written in full and synced, renamed over the record, and
     the directory is synced. A failure leaves the previous record (or none), never a partial one."""
     directory = os.path.dirname(RESTART_PENDING)
     os.makedirs(directory, exist_ok=True)
+    write_boot_mark()  # before the record, so a record never has an older mark
     fd, tmp = tempfile.mkstemp(prefix=".update-restart-pending.", dir=directory)
     try:
         try:
@@ -774,6 +846,10 @@ def clear_restart_pending() -> None:
     try:
         os.remove(RESTART_PENDING)
     except FileNotFoundError:
+        pass
+    try:
+        os.remove(RESTART_PENDING + ".boot")
+    except OSError:
         pass
 
 

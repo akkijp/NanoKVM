@@ -294,7 +294,7 @@ export const Update = ({ setIsLocked }: UpdateProps) => {
   // was opened may be stale (another tab may have updated meanwhile).
   function ensureBaseline(): Promise<boolean> {
     return api
-      .getVersion()
+      .getVersion(true) // from the device alone: no wait for GitHub
       .then((rsp: any) => {
         const data = rsp?.data;
         if (rsp?.code !== 0 || !data?.serverStarted) return false;
