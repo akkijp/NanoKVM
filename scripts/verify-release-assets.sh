@@ -182,4 +182,9 @@ if ! python3 "$(dirname "$0")/verify-package-layout.py" "$TARBALL"; then
     exit 1
 fi
 
+# akkijp fork: every library the packaged programs need is shipped or on the device.
+if ! python3 "$(dirname "$0")/verify-elf-deps.py" "$TARBALL"; then
+    exit 1
+fi
+
 echo "[OK] verified NanoKVM release assets for $VERSION"

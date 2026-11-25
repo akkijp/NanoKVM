@@ -71,7 +71,8 @@ def main() -> int:
     if len(args) != 1:
         print(__doc__.strip().splitlines()[-2], file=sys.stderr)
         return 2
-    system = {line.split("#", 1)[0].strip() for line in SYSTEM_LIBS.read_text().splitlines()} - {""}
+    text = SYSTEM_LIBS.read_text() if SYSTEM_LIBS.exists() or not report else ""
+    system = {line.split("#", 1)[0].strip() for line in text.splitlines()} - {""}
     files = {}
     with tarfile.open(args[0], "r:gz") as tar:
         for member in tar.getmembers():

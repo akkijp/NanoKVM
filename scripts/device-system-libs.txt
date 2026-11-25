@@ -1,0 +1,8 @@
+# akkijp fork: shared libraries the NanoKVM's own system provides (the musl toolchain's runtime),
+# so a release package does not ship them. scripts/verify-elf-deps.py requires every library the
+# packaged programs need to be either in server/dl_lib or here. Taken from the 2.5.4.1 release
+# build (verify-elf-deps.py --unresolved); add one only after checking it exists on the device.
+libc.so
+libgcc_s.so.1
+libstdc++.so.6
+libatomic.so.1
