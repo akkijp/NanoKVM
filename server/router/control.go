@@ -44,6 +44,11 @@ func controlRouter(r *gin.Engine, control *controlmode.Manager, picoclawService 
 			c.JSON(http.StatusOK, gin.H{"code": -1, "message": "invalid control mode"})
 			return
 		}
+		// akkijp fork: refused before anything is switched, so MCP keeps control.
+		if msg := picoclaw.ControlModeRefused(string(req.Mode)); msg != "" {
+			c.JSON(http.StatusOK, gin.H{"code": -3, "message": msg})
+			return
+		}
 
 		previousStatus, previousErr := control.Status()
 		if previousErr != nil {

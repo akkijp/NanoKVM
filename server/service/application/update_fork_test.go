@@ -89,6 +89,12 @@ func TestLibrariesAreCheckedAgainstThePackagesOwnList(t *testing.T) {
 	if err := validateExtractedPackage(build("libkvm.so\n../x\n"), "2.5.4.2"); err == nil {
 		t.Fatal("a path in the list must be refused")
 	}
+	if err := validateExtractedPackage(build("libkvm.so\n"+strings.Repeat("a", 20*1024)+"\n"), "2.5.4.2"); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("an oversized list: %v", err)
+	}
+	if err := validateExtractedPackage(build("libkvm.so\n"+strings.Repeat("x", 200)+"\n"), "2.5.4.2"); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("an overlong name: %v", err)
+	}
 }
 
 func TestShippedAppHasEveryRequiredFile(t *testing.T) {

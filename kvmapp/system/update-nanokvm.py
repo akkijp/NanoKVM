@@ -324,12 +324,23 @@ def extract(package: str, version: str, work: str, unpacked_size: int = None) ->
     return source_dir
 
 
+MAX_LIBRARY_LIST_BYTES = 16 * 1024
+MAX_LIBRARY_NAME_BYTES = 128
+MAX_LIBRARIES = 256
+
+
 def check_library_list(source_dir: str) -> None:
     """server/dl_lib must hold exactly the libraries the package lists in server/dl_lib.list
     (written by package.sh). The list belongs to the new version, so a release may drop or add
     libraries; the release build checks it against the tracked server/dl_lib."""
-    with open(os.path.join(source_dir, "server", "dl_lib.list")) as f:
+    list_path = os.path.join(source_dir, "server", "dl_lib.list")
+    # Bounded before it is read (the same limits as archive.go).
+    if os.path.getsize(list_path) > MAX_LIBRARY_LIST_BYTES:
+        raise UpdateError(f"package library list is larger than {MAX_LIBRARY_LIST_BYTES} bytes")
+    with open(list_path) as f:
         listed = {line.strip() for line in f if line.strip()}
+    if len(listed) > MAX_LIBRARIES or any(len(name) > MAX_LIBRARY_NAME_BYTES for name in listed):
+        raise UpdateError("package library list is too long")
     for name in listed:
         if "/" in name or "\\" in name or name in (".", ".."):
             raise UpdateError(f"package lists a bad library name {name!r}")

@@ -197,12 +197,29 @@ func validateExtractedPackage(rootDir, expectedVersion string) error {
 	return checkLibraryList(rootDir)
 }
 
+// Limits of server/dl_lib.list (the same in update-nanokvm.py).
+const (
+	maxLibraryListBytes = 16 * 1024
+	maxLibraryNameBytes = 128
+	maxLibraries        = 256
+)
+
 // checkLibraryList checks server/dl_lib against the package's own list (server/dl_lib.list,
 // written by package.sh): exactly the listed libraries, each a regular file. The list belongs to
 // the new version, so a release may drop or add libraries; the release build checks the list
 // against the tracked server/dl_lib.
 func checkLibraryList(rootDir string) error {
-	data, err := os.ReadFile(filepath.Join(rootDir, "server", "dl_lib.list"))
+	listPath := filepath.Join(rootDir, "server", "dl_lib.list")
+	// Bounded before it is read: an oversized list must be refused without using the memory of
+	// the running KVM (a release has a few dozen names).
+	info, err := os.Lstat(listPath)
+	if err != nil {
+		return fmt.Errorf("invalid update package layout: read server/dl_lib.list: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxLibraryListBytes {
+		return fmt.Errorf("invalid update package layout: server/dl_lib.list is larger than %d bytes", maxLibraryListBytes)
+	}
+	data, err := os.ReadFile(listPath)
 	if err != nil {
 		return fmt.Errorf("invalid update package layout: read server/dl_lib.list: %w", err)
 	}
@@ -211,6 +228,9 @@ func checkLibraryList(rootDir string) error {
 		name := strings.TrimSpace(line)
 		if name == "" {
 			continue
+		}
+		if len(name) > maxLibraryNameBytes || len(listed) >= maxLibraries {
+			return fmt.Errorf("invalid update package layout: server/dl_lib.list is too long")
 		}
 		if strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
 			return fmt.Errorf("invalid update package layout: bad library name %q in server/dl_lib.list", name)

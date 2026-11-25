@@ -954,6 +954,8 @@ class UpdateScriptTest(unittest.TestCase):
             (with_list("libkvm.so\nlibsys.so\n"), "missing server/dl_lib/libsys.so"),
             (with_list("libkvm.so\n", "libextra.so"), "libextra.so, which its list does not name"),
             (with_list("libsys.so\n", "libsys.so"), "does not name libkvm.so"),
+            (with_list("libkvm.so\n" + "a" * 20000 + "\n"), "larger than"),
+            (with_list("libkvm.so\n" + "x" * 200 + "\n"), "too long"),
         ):
             with self.subTest(message=message):
                 path, _ = self.package("2.5.4.2", entries, name=f"p{abs(hash(message))}/nanokvm_2.5.4.2.tar.gz")
@@ -1668,13 +1670,15 @@ class MicrophoneTest(unittest.TestCase):
         self.assertEqual(status, "on")
 
     def run_s95(self, action, mic_fails=False, picoclaw_fails=False, pidof_after_start=False, expect_status=None,
-                kvm_up=None, server_up=None):
+                kvm_up=None, server_up=None, real_lock=False):
         """Run the real S95nanokvm branch with everything that touches the device stubbed out,
         recording the order of the fork's boot steps and the daemon starts."""
         log = self.base / "order.log"
         text = S95.read_text()
-        text = text.replace("exec 9>/run/nanokvm-service.lock || exit 1", "exec 9>/dev/null")
-        text = text.replace("flock -n 9 ||", "true ||")
+        if not real_lock:
+            text = text.replace("exec 9>/run/nanokvm-service.lock || exit 1", "exec 9>/dev/null")
+            text = text.replace("flock -n 9 ||", "true ||")
+        # (with real_lock, the lock is fs/run/nanokvm-service.lock, as /run/ is moved below)
         # Daemons: real processes that either stay up for a while or exit at once.
         kvm_up = pidof_after_start if kvm_up is None else kvm_up
         server_up = pidof_after_start if server_up is None else server_up
@@ -1715,6 +1719,23 @@ sleep() {{ :; }}
         if action == "start" and expect_status in (None, 0, 1) and "not starting" not in result.stderr:
             self.assertTrue((fake / "boot/hostname.prefix").read_text().strip().endswith("kvm"))
         return log.read_text().split() if log.exists() else []
+
+    @unittest.skipUnless(shutil.which("flock"), "needs flock(1), as on the device")
+    def test_s95_refuses_while_the_updater_holds_the_service_lock(self):
+        import fcntl
+        lock_path = self.base / "fs/run/nanokvm-service.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # The updater holds the lock it shares with S95 (the same path, the same kind of lock).
+        self.u.SERVICE_LOCK = str(lock_path)
+        held = self.u.lock_service_operations(self.u.open_service_lock())
+        try:
+            order = self.run_s95("restart", expect_status=1, real_lock=True)
+            self.assertNotIn("daemon-NanoKVM-Server", order)  # refused before stopping or starting
+            self.assertIn("already in progress", self.last_result.stderr)
+        finally:
+            held.close()
+        order = self.run_s95("restart", real_lock=True)
+        self.assertIn("daemon-NanoKVM-Server", order)
 
     def test_start_and_restart_both_run_the_boot_steps_before_the_daemons(self):
         for action in ("start", "restart"):

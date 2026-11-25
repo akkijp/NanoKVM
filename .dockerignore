@@ -11,3 +11,9 @@ support/sg2002/kvm_system/CMakeLists.txt
 support/sg2002/kvm_vision_test/build
 support/sg2002/kvm_vision_test/dist
 support/sg2002/kvm_vision_test/CMakeLists.txt
+
+# akkijp fork: build output (release packages, the builder image ID) must not reach the image
+# build context: it would grow the context and re-run the SDK build on every change.
+build
+web/dist
+web/dist.new

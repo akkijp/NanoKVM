@@ -46,3 +46,14 @@ func TestStartAndInstallHandlersRefuseBeforeStateChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestControlModeCannotBeHandedToPicoclaw(t *testing.T) {
+	if ControlModeRefused("picoclaw") == "" {
+		t.Fatal("switching control to picoclaw must be refused")
+	}
+	for _, mode := range []string{"off", "mcp"} {
+		if msg := ControlModeRefused(mode); msg != "" {
+			t.Fatalf("%s refused: %s", mode, msg)
+		}
+	}
+}
