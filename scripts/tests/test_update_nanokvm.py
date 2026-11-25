@@ -1725,9 +1725,10 @@ sleep() {{ :; }}
         import fcntl
         lock_path = self.base / "fs/run/nanokvm-service.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # The updater holds the lock it shares with S95 (the same path, the same kind of lock).
-        self.u.SERVICE_LOCK = str(lock_path)
-        held = self.u.lock_service_operations(self.u.open_service_lock())
+        # The updater holds the lock it shares with S95: the same file, taken the way
+        # update-nanokvm.py takes it (fcntl.flock, which is flock(2) like flock(1)).
+        held = open(lock_path, "w")
+        fcntl.flock(held, fcntl.LOCK_EX)
         try:
             order = self.run_s95("restart", expect_status=1, real_lock=True)
             self.assertNotIn("daemon-NanoKVM-Server", order)  # refused before stopping or starting
