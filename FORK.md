@@ -25,6 +25,10 @@
 | 保守用の `update-nanokvm.py` を、SHA-512 を確かめて入れる形に書き直す | 上流のものは cdn.sipeed.com の `latest.zip` を確かめずに入れていた。最初の 2.5.4.1 を入れる入口にもなる | `kvmapp/system/update-nanokvm.py` |
 | マイクを切る（録音デバイスを持つサウンドカードを起動・再起動のたびに外す。結果は `/run/nanokvm-microphone`） | NanoKVM は録音を使わない。`/etc/kvm/enable-microphone` を置けば切らない | `kvmapp/system/init.d/S95nanokvm` |
 | AI 操作機能（picoclaw）の導入・初期設定・起動を断る（サーバーと起動台本の両方） | LLM にキーボード・画面を渡す機能で、本体は cdn.sipeed.com から同じ CDN のハッシュで取る | `server/service/picoclaw/fork_disabled.go`、`S95nanokvm`、`S96picoclaw` |
+| 更新の途中で止まっても半端な版を起動しない（入れ替えの前後に記録 `/etc/kvm/update-restart-pending` を書き、起動台本・`kvm_system`・サーバーが同じ規則で読む。起動台本のロックを更新と共有する） | 上流の更新は途中の停電・失敗で新旧まじりの `/kvmapp` を起動しうる | `install.go`・`pending.go`・`update-nanokvm.py`・`S95nanokvm`・`system_init.cpp` |
+| 画面は更新の結果を、版・サーバーの起動時刻・更新の回数（`/etc/kvm/update-count`）で確かめ、途中で再読み込みしても見守りを続ける | 上流の画面は、更新が本当に済んだかを確かめずに再読み込みする | `web/src/lib/update-watch.ts`、`update/index.tsx` |
+| AI の操作モードを picoclaw にしない（既定は off、保存された picoclaw も off） | picoclaw は動かないのに、操作権だけが移る | `server/service/controlmode/manager.go`、`server/router/control.go` |
+| パッケージに自分のライブラリの一覧（`server/dl_lib.list`）を入れ、リリースのときに実行ファイルが要るライブラリ（DT_NEEDED・RISC-V 向け）がそろっているか確かめる | 足りないライブラリのまま入ると、入れ替えた後にサーバーが起動しない | `scripts/package.sh`、`scripts/verify-elf-deps.py`、`archive.go` |
 | テストとリリースで使うコンテナと pnpm をダイジェスト・ハッシュで固定する | 同じタグでも、VM ごとに違う Node・pnpm でビルドしないため | `scripts/fork-env.sh`、`web/package.json` の `packageManager` |
 | ビルド環境の取得物を確かめる（ツールチェーンと Go の SHA-256、MaixCDK のコミット固定）。`make` のたびに Dockerfile からビルド環境を作る | 上流は sophon.cn・go.dev から確かめずに取り、MaixCDK は main の最新を使い、その Python の依存物もその日の最新を入れる（このフォークは `docker/maixcdk-*.lock` でハッシュ固定）。古いビルド環境が残ると固定が効かない | `docker/Dockerfile`、`Makefile` |
 | GitHub Actions と devcontainer を消す | 上流のリリース手順（main・GHCR の `:latest`・上流の CDN）向けで、このフォークでは使わない。ビルドは nkbuild で行う | `.github/workflows/`、`.devcontainer/` |
@@ -111,3 +115,9 @@ python3 /root/update-nanokvm.py --file /root/nanokvm_2.5.4.1.tar.gz --sha512 <la
 自動では戻さない。全部を戻すときは、microSD に公式の NanoKVM イメージを書き直す（アプリも `/etc` も工場出荷の状態に戻る）。そのあと必要なら、上の手順でもう一度入れる。
 
 2 回目からは画面の更新か `python3 /etc/kvm/update-nanokvm.py`（フォークの Releases から取る）で入る。
+
+### 入れる前の備え・上流に戻したいとき
+
+- 最初に入れる前に、microSD をまるごと写しておく（機器の電源を切ってカードを PC に挿し、`dd` などでイメージにする）。これがいちばん確かな戻し方になる。少なくとも `/etc/kvm`（パスワード・TLS・設定）は控えておく
+- 入れ終わって動いている 2.5.4.1 から上流の版に戻すときは、写しておいたイメージか公式の NanoKVM イメージを microSD に書き直す。`/root/old` には上流の版が残るが、`/etc` の起動台本はこのフォークのものに入れ替わっているので、`/kvmapp` を手で入れ替えるだけの戻し方はしない（試していない）
+- 上流の画面の更新や上流の `update-nanokvm.py` を、このフォークの上で動かさない（4 つの数字の版を扱えず、取得先も上流になる）
