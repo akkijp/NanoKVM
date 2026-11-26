@@ -1,0 +1,13 @@
+# sed expressions applied to the Sipeed defconfig (minimal form, os/buildroot-2025.02/
+# cvitek_SG200X_musl_riscv64_defconfig) for Buildroot 2025.02. One per line.
+#
+# Packages removed from Buildroot since 2023.11 (legacy options would stop the build):
+/^BR2_PACKAGE_RAMSPEED=y$/d
+/^BR2_PACKAGE_OBSIDIAN_CURSORS=y$/d
+# gdb 13 is no longer offered; the default version of 2025.02 is used:
+/^BR2_GDB_VERSION_13=y$/d
+#
+# Dropped by Buildroot itself, accepted (the NanoKVM app ships its own opencv and uses none of
+# these): protobuf, mosh, opencv4 dnn/objdetect/stitching (musl has no ucontext, which abseil
+# needs since 2024.x), python-selenium (Rust has no riscv64 musl target), ffmpeg avresample
+# (removed in ffmpeg 6), tiff jbig.
