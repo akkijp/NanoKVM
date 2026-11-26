@@ -11,11 +11,13 @@
 # removed since 2023.11).
 #
 #   os/buildroot-2025.02/apply.sh <sdk-work-dir>
+#   BR_SERIES=os/buildroot-2024.02 os/buildroot-2025.02/apply.sh <sdk-work-dir>
+# BR_SERIES names the directory with the version's own files: "version" (version and the
+# SHA-256 from its .sign file), the defconfig, defconfig.fixup and patches/. Default: this one.
 set -euo pipefail
 WORK="$(cd "$1" && pwd)"
-HERE="$(cd "$(dirname "$0")" && pwd)"
-VERSION=2025.02.20
-SHA256=44904ee44ac6750e06135454ed5cbcb8ea9354e6d5b7e2b2668581bd8b6ba1b6  # from buildroot-2025.02.20.tar.gz.sign
+HERE="$(cd "${BR_SERIES:-$(dirname "$0")}" && pwd)"
+read -r VERSION SHA256 < "$HERE/version"
 CACHE="${OS_CACHE:-$HOME/os}"
 TARBALL="$CACHE/buildroot-$VERSION.tar.gz"
 OLD="$WORK/buildroot-2023.11.2-sipeed"
@@ -39,9 +41,13 @@ cp -a "$OLD"/configs/cvitek_SG200X_*_defconfig "$NEW/configs/"
 # whose default values trip 2025.02's legacy checks), then the fixups below.
 cp "$HERE/cvitek_SG200X_musl_riscv64_defconfig" "$NEW/configs/"
 for p in $PACKAGES; do cp -a "$OLD/package/$p" "$NEW/package/"; done
+# numpy on riscv (Sipeed's change), where the version does not have it yet (2024.02).
+grep -q "default y if BR2_riscv" "$NEW/package/python-numpy/Config.in" \
+    || sed -i '0,/default y if BR2_x86_64/s//default y if BR2_x86_64\n\tdefault y if BR2_riscv/' "$NEW/package/python-numpy/Config.in"
 cp -a "$OLD/package/freetype/fix-build-in-cvi_mmf_sdk.patch" "$NEW/package/freetype/"
 # Our own fixes for the SDK toolchain (os/buildroot-2025.02/patches/<package>/*.patch).
 for dir in "$HERE"/patches/*/; do
+    [ -d "$dir" ] || continue
     pkg="$(basename "$dir")"
     cp "$dir"*.patch "$NEW/package/$pkg/"
 done
@@ -51,7 +57,7 @@ sed -i 's/^# CONFIG_FEATURE_VOLUMEID_EXFAT is not set$/CONFIG_FEATURE_VOLUMEID_E
 # code in their static helper libraries): Buildroot 2025.02 links every musl program with -ztext,
 # which refuses them. The official image 1.4.3 has the same programs with TEXTREL (udevadm, gdb,
 # gdbserver) and they run on the device, so only these are exempted; -ztext stays for the rest.
-for pkg in eudev gdb; do
+grep -q -- "-ztext" "$NEW/package/Makefile.in" && for pkg in eudev gdb; do
     mk="$NEW/package/$pkg/$pkg.mk"
     var="$(echo "$pkg" | tr 'a-z-' 'A-Z_')"
     python3 - "$mk" "$var" <<'PY'

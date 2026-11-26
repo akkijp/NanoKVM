@@ -6,6 +6,8 @@
 #     <sdk-dir>  a checkout of sipeed/LicheeRV-Nano-Build with host-tools/ inside (see os/README.md)
 #     <variant>  baseline   the SDK as it is (its Buildroot 2023.11.2)
 #                br2025     Buildroot replaced by 2025.02.x LTS (os/buildroot-2025.02/apply.sh)
+#                br2024     Buildroot replaced by 2024.02.13, the last 2024.02 LTS release (its
+#                           support has ended; for comparison and for the 2024.02 request)
 #     With NANOKVM_RELEASE=<dir with nanokvm_X.Y.Z.N.tar.gz and latest.json> the NanoKVM layer
 #     (os/nanokvm/apply.sh) is applied too, and the work dir is <sdk-dir>-<variant>-nanokvm.
 #
@@ -28,6 +30,7 @@ fi
 case "$VARIANT" in
     baseline) ;;
     br2025) "$HERE/buildroot-2025.02/apply.sh" "$WORK" ;;
+    br2024) BR_SERIES="$HERE/buildroot-2024.02" "$HERE/buildroot-2025.02/apply.sh" "$WORK" ;;
     *) echo "unknown variant $VARIANT" >&2; exit 2 ;;
 esac
 if [ -n "${NANOKVM_RELEASE:-}" ]; then
