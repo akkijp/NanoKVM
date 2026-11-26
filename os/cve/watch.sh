@@ -12,7 +12,7 @@
 # 4. A macOS notification with the counts.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPORTS="${REPORTS:-$HOME/Documents/GitHub/akkijp/nanokvm-cve}"
+REPORTS="${REPORTS:-$HOME/nanokvm-cve}"  # outside ~/Documents: launchd jobs may not read it (TCC)
 TRIAGE_MAX="${TRIAGE_MAX:-80}"
 CODEX_MODEL="${CODEX_MODEL:-gpt-6.2-astra}"
 DATE="$(date +%Y-%m-%d)"
