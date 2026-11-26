@@ -1,0 +1,79 @@
+# NanoKVM の OS イメージ（akkijp フォーク）
+
+NanoKVM の microSD に書くイメージ（起動区画＋ルートファイルシステム）を、Sipeed の SDK から作り直す。
+上流の公式イメージ 1.4.3 は Buildroot 2023.11.2 で作られている。ここでは **Buildroot 2025.02.x LTS（2028 年 3 月までサポート）** に上げ、フォークのアプリ 2.5.4.1 を入れたイメージを作る。
+
+- 2024.02 LTS は使わない。Buildroot は 2025.02 から奇数年の最初の版を 3 年の LTS にした。2024.02 は既にサポートが終わっている
+- カーネル（5.10.4）・U-Boot・FSBL は SDK のまま。Buildroot が作るのはルートファイルシステムだけ（カーネルの CVE は下の見張りで追う）
+
+## 材料
+
+| 材料 | 版・固定のしかた |
+|---|---|
+| SDK | [sipeed/LicheeRV-Nano-Build](https://github.com/sipeed/LicheeRV-Nano-Build) a4d8622（2026-11-09） |
+| ツールチェーン | [sophgo/host-tools](https://github.com/sophgo/host-tools) 103c66f（GCC 10.2・musl。SDK の README のとおり `host-tools/` に置く） |
+| Buildroot | 2025.02.20（`buildroot-2025.02.20.tar.gz.sign` の SHA-256 `44904ee4…` を apply.sh が確かめる） |
+| ビルド環境 | `os/Dockerfile`（ubuntu:22.04 をダイジェストで、apt を日付つきスナップショットで固定） |
+| アプリ | フォークのリリース 2.5.4.1（`latest.json` の SHA-512 を確かめて `/kvmapp` に入れる） |
+| 比べる相手 | 公式イメージ `20260610_NanoKVM_Rev1_4_3.img`（GitHub の SHA-256 `b03f3be9…`） |
+
+## 作り方（nkbuild で）
+
+```bash
+mkdir -p ~/os && cd ~/os
+git clone --depth=1 https://github.com/sipeed/LicheeRV-Nano-Build sdk
+git clone --depth=1 https://github.com/sophgo/host-tools sdk/host-tools
+# フォークの os/ を ~/os に置く（または akkijp/NanoKVM の akki/os を clone して os/ を使う）
+NANOKVM_RELEASE=~/releases/2.5.4.1 ./build.sh ~/os/sdk br2025
+# できたイメージ: ~/os/sdk-br2025-nanokvm/install/soc_sg2002_licheervnano_sd/images/*.img
+```
+
+`build.sh` は SDK を作業用の場所に写してから変える（元の clone は汚さない）。1 回のビルドは nkbuild（8 コア・8 GB）で 1〜2 時間、ディスクは 1 つの作業場所で 40 GB ほど使う。
+
+- `baseline`: SDK のまま（Buildroot 2023.11.2）。比べるため
+- `br2025`: Buildroot を 2025.02.20 に替える（`os/buildroot-2025.02/apply.sh`）
+- `NANOKVM_RELEASE=…`: NanoKVM の層を重ねる（`os/nanokvm/apply.sh`）
+
+## 2025.02 に移すときに変えたこと（`os/buildroot-2025.02/`）
+
+Sipeed が Buildroot 2023.11.2 に足したものを移した: `board/cvitek`、defconfig 2 つ、9 パッケージ（aic8800-sdio-firmware・axp2101・cvitek-riscv64-musl-sysroot・gb-test-roms・lcdtest・mgba・sg2002-codec-firmware・tpudemo-sg200x・xuantie-gdb）、freetype の修正、busybox の exFAT。python-pyqt5-sip・opencv4 4.9 以上・numpy の riscv は 2025.02 に既にある。
+
+defconfig は Sipeed のもの（全項目を書き出した形）を最小の形（savedefconfig）にしてから使う。全項目の形だと、既定値のままの古い項目で 2025.02 の legacy の検査が止まる。消えたパッケージ（ramspeed・obsidian-cursors）と gdb 13 の指定は `defconfig.fixup` で消す。
+
+Buildroot 自身の都合で外れるもの（NanoKVM のアプリは使わない）: protobuf・mosh・opencv4 の dnn/objdetect/stitching（2025.02 は musl に ucontext が無いことを正しく扱い、abseil が要る protobuf が組めない）、python-selenium（Rust に riscv64 musl の対象が無い）、ffmpeg の avresample（ffmpeg 6 で廃止）、tiff の jbig。
+
+## NanoKVM の層（`os/nanokvm/`）
+
+公式イメージ 1.4.3 を開いて確かめた中身に合わせる。
+
+- メモリ: ION 75 MiB（公式の dtb の ion-region が 0x4b00000）、起動ロゴ 5632 KiB
+- 起動区画: `usb.dev usb.disk0 usb.rndis0 wifi.sta gt9xx logo.jpeg ver`（汎用イメージの `usb.ncm` の代わり）
+- パッケージ: 公式に 1 つもファイルが無いもの（Qt・フォント・カーソル・tslib・PyQt5・babel・lftp・vsftpd・android-tools・fbv・Kerberos）を外し、ser2net・OpenIPMI を足す。bind も外す（公式はクライアントの道具だけ。2025.02 の bind 9.20 が要る liburcu が SDK の GCC 10 でリンクできない）。tailscale は入れない（アプリが必要なときに最新版を入れる）
+- `/etc/init.d`: 公式と同じ 27 本だけ（`init.d.keep`。ほかは post-build で消す）。NanoKVM のものはアプリの `system/init.d` から
+- `/kvmapp`: フォークのリリース。初回起動の印 `kvm_new_app`・`kvm_new_img` も公式と同じに置く
+
+## 脆弱性（CVE）の見張り（`os/cve/`）
+
+- `scan.sh`（nkbuild）: Buildroot の設定から SBOM（CycloneDX、`utils/generate-cyclonedx`）を作り、SDK が別に作るカーネル（5.10.4）を足して、NVD の写し（[fkie-cad/nvd-json-data-feeds](https://github.com/fkie-cad/nvd-json-data-feeds)、浅い clone）と照合する（`support/scripts/cve-check`）。ビルドしなくても回せる。「device」（いま機器に入っている 2023.11.2 の構成）と「rebuild」（2025.02 ＋ NanoKVM の層）の 2 つ
+- `watch.sh`（Mac）: nkbuild で scan.sh を回し、前回からの新しい CVE だけを Codex（読み取りのみ）に渡し、`triage-prompt.md` の基準で「すぐ対応／次の版で／関係なし」に分けさせる。結果は `~/nanokvm-cve/<日付>/triage.md`、終わったら通知
+- 定期実行: launchd `jp.akki.nanokvm-cve-watch`（毎週月曜 9:00）。台本は `~/.local/share/akkijp/nanokvm-os`（akki/os の worktree。毎回 origin に合わせる）から動く。launchd の仕事は `~/Documents` を読めない（TCC）ので、置き場所はどちらも `~/Documents` の外
+- 手で回す: `os/cve/watch.sh`（Codex なしは `--no-triage`）。nkbuild へは 1Password の SSH エージェントで入るので、1Password が閉じていると失敗し、そう通知する
+
+2026-11-26 の初回: device はカーネル以外 767 件・rebuild は 292 件（openssh・OpenSSL・expat・vim・rsync・Django・libxml2 は 0 に）。カーネル 5.10.4 は 6,878 件で、Buildroot を上げても減らない。Codex の初回の仕分けは「すぐ対応」0 件。
+
+## microSD に書く・戻す
+
+書く前に、いまの microSD をまるごと写す（これがいちばん確かな戻し方）。
+
+```bash
+# 機器の電源を切ってカードを Mac に挿し、ディスク番号を確かめる（間違えると Mac のディスクを消す）
+diskutil list
+diskutil unmountDisk /dev/diskN
+sudo dd if=/dev/rdiskN of=nanokvm-sd-backup.img bs=4m status=progress   # 今のカードを写す
+sudo dd if=<作ったイメージ>.img of=/dev/rdiskN bs=4m status=progress     # 新しいイメージを書く
+diskutil eject /dev/diskN
+```
+
+- 書き込むと `/etc/kvm` の設定（パスワード・TLS・Wi-Fi）も消える。先に `/etc/kvm` を控え、入れ直す
+- 戻すときは、写しておいたイメージ（または公式の `20260610_NanoKVM_Rev1_4_3.img`）を同じ手順で書く
+- 初回起動ではアプリの移行（`kvm_new_app`）が起動台本を整え、もう一度起動し直す
