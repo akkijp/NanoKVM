@@ -8,6 +8,15 @@ Signed-off-by: akkijp fork
 ---
 --- a/lib/dictBuilder/cover.c
 +++ b/lib/dictBuilder/cover.c
+@@ -241,7 +241,7 @@
+   unsigned d;
+ } COVER_ctx_t;
+ 
+-#if !defined(_GNU_SOURCE) && !defined(__APPLE__) && !defined(_MSC_VER)
++#if !(defined(_GNU_SOURCE) && defined(__GLIBC__)) && !defined(__APPLE__) && !defined(_MSC_VER) /* akkijp */
+ /* C90 only offers qsort() that needs a global context. */
+ static COVER_ctx_t *g_coverCtx = NULL;
+ #endif
 @@ -290,7 +290,7 @@
   */
  #if (defined(_WIN32) && defined(_MSC_VER)) || defined(__APPLE__)
