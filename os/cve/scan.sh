@@ -30,7 +30,7 @@ for entry in $TREES; do
     echo "== $name ($tree)"
     docker run --rm -v "$tree:/br" -v "$tool:/tool:ro" -v "$NVD:/nvd" -v "$OUT:/out" -v "$HERE:/cve:ro" \
         -w /br "$IMAGE" bash -euc "
-        cp -a /br /tmp/br && cp -a /tool /tmp/tool && cd /tmp/br
+        rsync -a --exclude /output --exclude /dl /br/ /tmp/br/ && rsync -a --exclude /output --exclude /dl /tool/ /tmp/tool/ && cd /tmp/br
         make -s cvitek_SG200X_musl_riscv64_defconfig >/dev/null
         make -s show-info > /tmp/show-info.json
         /tmp/tool/utils/generate-cyclonedx < /tmp/show-info.json > /tmp/sbom.json
