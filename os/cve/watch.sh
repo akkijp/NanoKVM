@@ -7,8 +7,8 @@
 # 2. Bring summary.json back to $REPORTS/<date>/ and compare with the last report: the CVEs that
 #    are new (per tree: "device" = the image on the device, "rebuild" = the 2025.02 rebuild).
 # 3. Hand the new ones to Codex (read-only) with os/cve/triage-prompt.md; its answer is
-#    $REPORTS/<date>/triage.md. At most TRIAGE_MAX of them, highest CVSS first; the rest are
-#    listed by count.
+#    $REPORTS/<date>/triage.md. At most TRIAGE_MAX of them (triage.json: outside the kernel
+#    first, highest CVSS first); the rest are only counted.
 # 4. A macOS notification with the counts.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -28,16 +28,16 @@ ssh -o ConnectTimeout=30 nkbuild "set -e; [ -d ~/os/fork ] || git clone -q https
 scp -q "nkbuild:os/cve-out/$DATE/summary.json" "$DIR/summary.json"
 
 PREVIOUS="$(ls -1d "$REPORTS"/20??-??-?? 2>/dev/null | grep -v "/$DATE\$" | tail -1 || true)"
-python3 "$HERE/diff.py" "$DIR/summary.json" "${PREVIOUS:+$PREVIOUS/summary.json}" "$TRIAGE_MAX" \
+python3 "$HERE/diff.py" "$DIR/summary.json" "${PREVIOUS:+$PREVIOUS/summary.json}" "$TRIAGE_MAX" "$DIR/triage.json" \
     > "$DIR/new.json" 2> "$DIR/counts.txt"
 cat "$DIR/counts.txt"
 
-if [ "${1:-}" != "--no-triage" ] && [ "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["triage"]))' "$DIR/new.json")" -gt 0 ]; then
+if [ "${1:-}" != "--no-triage" ] && [ "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["cves"]))' "$DIR/triage.json")" -gt 0 ]; then
     codex exec -s read-only -m "$CODEX_MODEL" -o "$DIR/triage.md" \
         "$(cat "$HERE/triage-prompt.md")
 
 ## 入力（新しく出てきた CVE）
-$(cat "$DIR/new.json")" < /dev/null > "$DIR/triage.log" 2>&1 || echo "codex failed; see $DIR/triage.log" >&2
+$(cat "$DIR/triage.json")" < /dev/null > "$DIR/triage.log" 2>&1 || echo "codex failed; see $DIR/triage.log" >&2
 fi
 
 osascript -e "display notification \"$(head -1 "$DIR/counts.txt")\" with title \"NanoKVM CVE の見張り\"" 2>/dev/null || true
