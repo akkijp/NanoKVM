@@ -17,7 +17,7 @@ NVD="$OS/nvd"
 IMAGE=nanokvm-os-builder
 KERNEL_VERSION="${KERNEL_VERSION:-5.10.4}"
 # name=path of a LicheeRV-Nano-Build buildroot tree
-TREES="${TREES:-device=$OS/sdk/buildroot rebuild=$OS/sdk-br2025/buildroot}"
+TREES="${TREES:-device=$OS/sdk/buildroot rebuild=$OS/sdk-br2025-nanokvm/buildroot}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # generate-cyclonedx and cve-check come from stock Buildroot 2025.02 (2023.11 has neither); they
 # read the show-info of either tree.
@@ -30,12 +30,12 @@ for entry in $TREES; do
     echo "== $name ($tree)"
     docker run --rm -v "$tree:/br" -v "$tool:/tool:ro" -v "$NVD:/nvd" -v "$OUT:/out" -v "$HERE:/cve:ro" \
         -w /br "$IMAGE" bash -euc "
-        cp -a /br /tmp/br && cd /tmp/br
+        cp -a /br /tmp/br && cp -a /tool /tmp/tool && cd /tmp/br
         make -s cvitek_SG200X_musl_riscv64_defconfig >/dev/null
         make -s show-info > /tmp/show-info.json
-        /tool/utils/generate-cyclonedx < /tmp/show-info.json > /tmp/sbom.json
+        /tmp/tool/utils/generate-cyclonedx < /tmp/show-info.json > /tmp/sbom.json
         python3 /cve/add-kernel.py /tmp/sbom.json $KERNEL_VERSION
-        /tool/support/scripts/cve-check --nvd-path /nvd < /tmp/sbom.json > /out/$name.sbom-cve.json
+        /tmp/tool/support/scripts/cve-check --nvd-path /nvd < /tmp/sbom.json > /out/$name.sbom-cve.json
     "
 done
 python3 "$HERE/summarize.py" "$OUT"

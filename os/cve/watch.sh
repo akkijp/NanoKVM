@@ -20,8 +20,11 @@ DIR="$REPORTS/$DATE"
 mkdir -p "$DIR"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-ssh -o ConnectTimeout=30 nkbuild "cd ~/NanoKVM && git fetch -q origin && git checkout -q --detach origin/akki/os \
-    && os/cve/scan.sh ~/os/cve-out/$DATE" > "$DIR/scan.log" 2>&1
+# nkbuild keeps its own clone for this (~/os/fork; ~/NanoKVM is the app's test checkout).
+ssh -o ConnectTimeout=30 nkbuild "set -e; [ -d ~/os/fork ] || git clone -q https://github.com/akkijp/NanoKVM ~/os/fork; \
+    cd ~/os/fork && git fetch -q origin && git checkout -q --detach origin/akki/os \
+    && os/cve/scan.sh ~/os/cve-out/$DATE" > "$DIR/scan.log" 2>&1 \
+    || { osascript -e 'display notification "nkbuild に入れず、見張りを回せませんでした" with title "NanoKVM CVE の見張り"' 2>/dev/null; exit 1; }
 scp -q "nkbuild:os/cve-out/$DATE/summary.json" "$DIR/summary.json"
 
 PREVIOUS="$(ls -1d "$REPORTS"/20??-??-?? 2>/dev/null | grep -v "/$DATE\$" | tail -1 || true)"
