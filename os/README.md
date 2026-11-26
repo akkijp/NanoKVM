@@ -38,6 +38,8 @@ NANOKVM_RELEASE=~/releases/2.5.4.1 ./build.sh ~/os/sdk br2025
 
 Sipeed が Buildroot 2023.11.2 に足したものを移した: `board/cvitek`、defconfig 2 つ、9 パッケージ（aic8800-sdio-firmware・axp2101・cvitek-riscv64-musl-sysroot・gb-test-roms・lcdtest・mgba・sg2002-codec-firmware・tpudemo-sg200x・xuantie-gdb）、freetype の修正、busybox の exFAT。python-pyqt5-sip・opencv4 4.9 以上・numpy の riscv は 2025.02 に既にある。
 
+SDK のツールチェーン（GCC 10・古い musl）のための直し: zstd 1.5.7 は glibc のときだけ `qsort_r` を使う（`patches/zstd/`）。eudev と gdb だけ `-ztext` を外す（2025.02 は musl のとき全部のプログラムを `-ztext` でリンクするが、この GCC では udevadm に TEXTREL が残る。公式 1.4.3 の udevadm も TEXTREL で、機器で動いている）。
+
 defconfig は Sipeed のもの（全項目を書き出した形）を最小の形（savedefconfig）にしてから使う。全項目の形だと、既定値のままの古い項目で 2025.02 の legacy の検査が止まる。消えたパッケージ（ramspeed・obsidian-cursors）と gdb 13 の指定は `defconfig.fixup` で消す。
 
 Buildroot 自身の都合で外れるもの（NanoKVM のアプリは使わない）: protobuf・mosh・opencv4 の dnn/objdetect/stitching（2025.02 は musl に ucontext が無いことを正しく扱い、abseil が要る protobuf が組めない）、python-selenium（Rust に riscv64 musl の対象が無い）、ffmpeg の avresample（ffmpeg 6 で廃止）、tiff の jbig。
@@ -48,8 +50,9 @@ Buildroot 自身の都合で外れるもの（NanoKVM のアプリは使わな�
 
 - メモリ: ION 75 MiB（公式の dtb の ion-region が 0x4b00000）、起動ロゴ 5632 KiB
 - 起動区画: `usb.dev usb.disk0 usb.rndis0 wifi.sta gt9xx logo.jpeg ver`（汎用イメージの `usb.ncm` の代わり）
-- パッケージ: 公式に 1 つもファイルが無いもの（Qt・フォント・カーソル・tslib・PyQt5・babel・lftp・vsftpd・android-tools・fbv・Kerberos）を外し、ser2net・OpenIPMI を足す。bind も外す（公式はクライアントの道具だけ。2025.02 の bind 9.20 が要る liburcu が SDK の GCC 10 でリンクできない）。tailscale は入れない（アプリが必要なときに最新版を入れる）
-- `/etc/init.d`: 公式と同じ 27 本だけ（`init.d.keep`。ほかは post-build で消す）。NanoKVM のものはアプリの `system/init.d` から
+- パッケージ: 公式に 1 つもファイルが無いもの（Qt・フォント・カーソル・tslib・PyQt5・babel・lftp・vsftpd・android-tools・fbv・Kerberos）を外し、ser2net・OpenIPMI を足す。tailscale は入れない（アプリが必要なときに最新版を入れる）
+- 公式から外したもの（`packages.remove` に理由）: bind（公式はクライアントの道具だけ。bind 9.20 が要る liburcu が SDK の GCC 10 でリンクできない）、gdb・gdbserver（KVM に要らない。gdb 15 は SDK の musl のヘッダで組めない）。net-snmp も入らなくなった（2025.02 の OpenIPMI が引き込まない。アプリは使わない）
+- `/etc/init.d`: 公式と同じ 27 本だけ（`init.d.keep`。ほかは post-build で消す）。dbus は 2025.02 で `S30dbus-daemon` に改名された。NanoKVM のものはアプリの `system/init.d` から
 - `/kvmapp`: フォークのリリース。初回起動の印 `kvm_new_app`・`kvm_new_img` も公式と同じに置く
 
 ## 脆弱性（CVE）の見張り（`os/cve/`）
@@ -59,7 +62,15 @@ Buildroot 自身の都合で外れるもの（NanoKVM のアプリは使わな�
 - 定期実行: launchd `jp.akki.nanokvm-cve-watch`（毎週月曜 9:00）。台本は `~/.local/share/akkijp/nanokvm-os`（akki/os の worktree。毎回 origin に合わせる）から動く。launchd の仕事は `~/Documents` を読めない（TCC）ので、置き場所はどちらも `~/Documents` の外
 - 手で回す: `os/cve/watch.sh`（Codex なしは `--no-triage`）。nkbuild へは 1Password の SSH エージェントで入るので、1Password が閉じていると失敗し、そう通知する
 
-2026-11-26 の初回: device はカーネル以外 767 件・rebuild は 292 件（openssh・OpenSSL・expat・vim・rsync・Django・libxml2 は 0 に）。カーネル 5.10.4 は 6,878 件で、Buildroot を上げても減らない。Codex の初回の仕分けは「すぐ対応」0 件。
+2026-11-26 の初回: device はカーネル以外 767 件・rebuild（できあがりの構成）は 287 件（openssh・OpenSSL・expat・vim・rsync・Django・libxml2 は 0 に）。カーネル 5.10.4 は 6,878 件で、Buildroot を上げても減らない。Codex の初回の仕分けは「すぐ対応」0 件。
+
+## できたもの（2026-11-26）
+
+`~/os/images/nanokvm-os-br2025.02.20-app2.5.4.1-20261126.img`（nkbuild、1.69 GB、SHA-256 `d6d7666b3777bb0a8cec6327d92dd2f618db36700b8d704d071daadc1473863b`）。SDK a4d8622・Buildroot 2025.02.20・アプリ 2.5.4.1。
+
+- ルートファイルシステムは e2fsck で誤りなし（使用 581 MB。公式は 776 MB）。起動区画・起動台本・`/kvmapp` は公式と同じ形
+- 生成中に出る `rootfs.sd(1677728064) is larger than partition size(1677721600)` は、rootfs.sd の末尾の詰め物の分だけで、ext4（409600 ブロック）は区画にちょうど収まる。SDK のままのビルドでも出る
+- まだ機器で起動を確かめていない（下の手順で microSD に書いて確かめる）
 
 ## microSD に書く・戻す
 

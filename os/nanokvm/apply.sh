@@ -39,7 +39,9 @@ grep -q '"usb.disk0"' "$CFG" && grep -q 'input/usb.disk0' "$GEN" || { echo "geni
 while read -r option; do
     [ -n "$option" ] && sed -i "/^${option}=/d" "$DEFCONFIG"
 done < <(grep -v '^\s*#' "$HERE/packages.remove" | sed '/^\s*$/d')
-cat "$HERE/packages.add" | grep -v '^\s*#' | sed '/^\s*$/d' >> "$DEFCONFIG"
+grep -v '^\s*#' "$HERE/packages.add" | sed '/^\s*$/d' | while read -r line; do
+    grep -qxF "$line" "$DEFCONFIG" || echo "$line" >> "$DEFCONFIG"   # once, also when re-applied
+done
 
 # 4. the overlay: /kvmapp and the app's init scripts; init scripts not kept are removed after build
 rm -rf "$OVERLAY" && mkdir -p "$OVERLAY/etc/init.d" "$OVERLAY/etc/kvm"
