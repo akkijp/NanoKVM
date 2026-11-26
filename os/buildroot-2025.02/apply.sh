@@ -40,6 +40,11 @@ cp -a "$OLD"/configs/cvitek_SG200X_*_defconfig "$NEW/configs/"
 cp "$HERE/cvitek_SG200X_musl_riscv64_defconfig" "$NEW/configs/"
 for p in $PACKAGES; do cp -a "$OLD/package/$p" "$NEW/package/"; done
 cp -a "$OLD/package/freetype/fix-build-in-cvi_mmf_sdk.patch" "$NEW/package/freetype/"
+# Our own fixes for the SDK toolchain (os/buildroot-2025.02/patches/<package>/*.patch).
+for dir in "$HERE"/patches/*/; do
+    pkg="$(basename "$dir")"
+    cp "$dir"*.patch "$NEW/package/$pkg/"
+done
 sed -i 's/^# CONFIG_FEATURE_VOLUMEID_EXFAT is not set$/CONFIG_FEATURE_VOLUMEID_EXFAT=y/' "$NEW/package/busybox/busybox-minimal.config"
 
 # The "Sipeed" menu, before the closing endmenu of package/Config.in.

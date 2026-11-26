@@ -1,0 +1,37 @@
+zstd: use qsort_r only with glibc
+
+The musl of the LicheeRV-Nano-Build toolchain (host-tools, GCC 10) has no qsort_r, so
+libzstd.so failed to link ("undefined reference to qsort_r"). Fall back to the C90 path
+(qsort with a file-scope context) unless the C library is glibc.
+
+Signed-off-by: akkijp fork
+---
+--- a/lib/dictBuilder/cover.c
++++ b/lib/dictBuilder/cover.c
+@@ -290,7 +290,7 @@
+  */
+ #if (defined(_WIN32) && defined(_MSC_VER)) || defined(__APPLE__)
+ static int WIN_CDECL COVER_strict_cmp(void* g_coverCtx, const void* lp, const void* rp) {
+-#elif defined(_GNU_SOURCE)
++#elif defined(_GNU_SOURCE) && defined(__GLIBC__) /* akkijp: the SDK musl has no qsort_r */
+ static int COVER_strict_cmp(const void *lp, const void *rp, void *g_coverCtx) {
+ #else /* C90 fallback.*/
+ static int COVER_strict_cmp(const void *lp, const void *rp) {
+@@ -306,7 +306,7 @@
+  */
+ #if (defined(_WIN32) && defined(_MSC_VER)) || defined(__APPLE__)
+ static int WIN_CDECL COVER_strict_cmp8(void* g_coverCtx, const void* lp, const void* rp) {
+-#elif defined(_GNU_SOURCE)
++#elif defined(_GNU_SOURCE) && defined(__GLIBC__) /* akkijp: the SDK musl has no qsort_r */
+ static int COVER_strict_cmp8(const void *lp, const void *rp, void *g_coverCtx) {
+ #else /* C90 fallback.*/
+ static int COVER_strict_cmp8(const void *lp, const void *rp) {
+@@ -328,7 +328,7 @@
+     qsort_r(ctx->suffix, ctx->suffixSize, sizeof(U32),
+             ctx,
+             (ctx->d <= 8 ? &COVER_strict_cmp8 : &COVER_strict_cmp));
+-#elif defined(_GNU_SOURCE)
++#elif defined(_GNU_SOURCE) && defined(__GLIBC__) /* akkijp: the SDK musl has no qsort_r */
+     qsort_r(ctx->suffix, ctx->suffixSize, sizeof(U32),
+             (ctx->d <= 8 ? &COVER_strict_cmp8 : &COVER_strict_cmp),
+             ctx);
