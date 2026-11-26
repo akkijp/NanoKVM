@@ -47,6 +47,26 @@ for dir in "$HERE"/patches/*/; do
 done
 sed -i 's/^# CONFIG_FEATURE_VOLUMEID_EXFAT is not set$/CONFIG_FEATURE_VOLUMEID_EXFAT=y/' "$NEW/package/busybox/busybox-minimal.config"
 
+# Packages whose target programs have text relocations with the SDK toolchain (GCC 10, non-PIC
+# code in their static helper libraries): Buildroot 2025.02 links every musl program with -ztext,
+# which refuses them. The official image 1.4.3 has the same programs with TEXTREL (udevadm, gdb,
+# gdbserver) and they run on the device, so only these are exempted; -ztext stays for the rest.
+for pkg in eudev gdb; do
+    mk="$NEW/package/$pkg/$pkg.mk"
+    var="$(echo "$pkg" | tr 'a-z-' 'A-Z_')"
+    python3 - "$mk" "$var" <<'PY'
+import sys
+path, var = sys.argv[1:]
+text = open(path).read()
+line = f'{var}_CONF_ENV += LDFLAGS="$(filter-out -ztext,$(TARGET_LDFLAGS))"  # akkijp: see os/buildroot-2025.02/apply.sh\n'
+if line not in text:
+    anchor = "$(eval $(autotools-package))"
+    assert anchor in text, path
+    text = text.replace(anchor, line + "\n" + anchor, 1)
+    open(path, "w").write(text)
+PY
+done
+
 # The "Sipeed" menu, before the closing endmenu of package/Config.in.
 python3 - "$NEW/package/Config.in" $PACKAGES <<'EOF'
 import sys
