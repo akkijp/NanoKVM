@@ -33,7 +33,7 @@ python3 "$HERE/diff.py" "$DIR/summary.json" "${PREVIOUS:+$PREVIOUS/summary.json}
 cat "$DIR/counts.txt"
 
 if [ "${1:-}" != "--no-triage" ] && [ "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["cves"]))' "$DIR/triage.json")" -gt 0 ]; then
-    codex exec -s read-only -m "$CODEX_MODEL" -o "$DIR/triage.md" \
+    codex exec --skip-git-repo-check -s read-only -m "$CODEX_MODEL" -o "$DIR/triage.md" \
         "$(cat "$HERE/triage-prompt.md")
 
 ## 入力（新しく出てきた CVE）

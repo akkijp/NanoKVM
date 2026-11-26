@@ -34,3 +34,8 @@ BR2_PACKAGE_VSFTPD
 BR2_PACKAGE_ANDROID_TOOLS
 BR2_PACKAGE_FBV
 BR2_PACKAGE_LIBKRB5
+# bind: the official image has only its client tools (delv, nslookup; BusyBox has nslookup too).
+# bind 9.20 (Buildroot 2025.02) needs liburcu, whose tests do not link with the SDK's GCC 10
+# toolchain ("read-only segment has dynamic relocations"); a DNS suite is not needed on the KVM.
+BR2_PACKAGE_BIND
+BR2_PACKAGE_BIND_TOOLS
