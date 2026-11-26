@@ -17,7 +17,7 @@ NVD="$OS/nvd"
 IMAGE=nanokvm-os-builder
 KERNEL_VERSION="${KERNEL_VERSION:-5.10.4}"
 # name=path of a LicheeRV-Nano-Build buildroot tree
-TREES="${TREES:-device=$OS/sdk/buildroot rebuild=$OS/sdk-br2025-nanokvm/buildroot}"
+TREES="${TREES:-device=$OS/sdk/buildroot rebuild=$OS/sdk-br2025-nanokvm/buildroot rebuild2024=$OS/sdk-br2024-nanokvm/buildroot}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # generate-cyclonedx and cve-check come from stock Buildroot 2025.02 (2023.11 has neither); they
 # read the show-info of either tree.
