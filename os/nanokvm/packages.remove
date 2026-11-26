@@ -39,3 +39,14 @@ BR2_PACKAGE_LIBKRB5
 # toolchain ("read-only segment has dynamic relocations"); a DNS suite is not needed on the KVM.
 BR2_PACKAGE_BIND
 BR2_PACKAGE_BIND_TOOLS
+# gdb / gdbserver: a debugger has no use on the KVM (the official image has them), and gdb 15
+# (Buildroot 2025.02) does not build against the SDK musl headers (no ELF_NFPREG).
+BR2_PACKAGE_GDB
+BR2_PACKAGE_GDB_SERVER
+BR2_PACKAGE_GDB_DEBUGGER
+BR2_PACKAGE_GDB_TUI
+BR2_PACKAGE_GDB_PYTHON
+BR2_PACKAGE_HOST_GDB
+BR2_PACKAGE_HOST_GDB_TUI
+BR2_PACKAGE_HOST_GDB_PYTHON3
+BR2_PACKAGE_HOST_GDB_SIM
