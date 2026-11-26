@@ -14,6 +14,7 @@ S15kvmhwd
 S21haveged
 S25wifimod
 S30dbus
+S30dbus-daemon
 S30eth
 S30rndis
 S30wifi
