@@ -58,7 +58,9 @@ ov="$WORK/buildroot/board/cvitek/SG200X/overlay/etc/init.d"
 install -m 0755 "$HERE/post-build.sh" "$WORK/nanokvm-post-build.sh"
 cp "$HERE/init.d.keep" "$WORK/nanokvm-init.d.keep"
 
-python3 - "$DEFCONFIG" "$OVERLAY" "$WORK/nanokvm-post-build.sh" <<'EOF'
+# Paths as Buildroot sees them: the SDK runs in a container with the work dir at another path,
+# so they are relative to Buildroot's own directory ($(TOPDIR) = <work>/buildroot).
+python3 - "$DEFCONFIG" '$(TOPDIR)/../nanokvm-overlay' '$(TOPDIR)/../nanokvm-post-build.sh' <<'EOF'
 import re, sys
 path, overlay, post = sys.argv[1:]
 text = open(path).read()
@@ -66,7 +68,7 @@ def add(key, value):
     global text
     m = re.search(rf'^{key}="(.*)"$', text, re.M)
     if m:
-        values = m.group(1).split()
+        values = [v for v in m.group(1).split() if "nanokvm-overlay" not in v and "nanokvm-post-build" not in v]
         if value not in values:
             text = text[:m.start()] + f'{key}="{" ".join(values + [value])}"' + text[m.end():]
     else:
