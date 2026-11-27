@@ -54,6 +54,10 @@ for s in S00kmod S01fs S03usbdev S15kvmhwd S30eth S30wifi S50avahi-daemon S50ssh
     install -m 0755 "$OVERLAY/kvmapp/system/init.d/$s" "$OVERLAY/etc/init.d/$s"
 done
 install -m 0755 "$OVERLAY/kvmapp/system/update-nanokvm.py" "$OVERLAY/etc/kvm/update-nanokvm.py"
+# The official image's S10uuid: hostname and MAC addresses from the chip's unique id
+# (/sys/class/cvi-base/base_uid). The SDK a4d8622's own S10uuid reads /device_key_legacy, which
+# nothing creates, so the hostname became "kvm-" and the MAC address was cut short.
+install -m 0755 "$HERE/S10uuid" "$OVERLAY/etc/init.d/S10uuid"
 # The generic image's USB network script, under the name the official image uses.
 ov="$WORK/buildroot/board/cvitek/SG200X/overlay/etc/init.d"
 [ -e "$ov/S30gadget_nic" ] && [ ! -e "$ov/S30rndis" ] && mv "$ov/S30gadget_nic" "$ov/S30rndis"
