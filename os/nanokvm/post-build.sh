@@ -10,12 +10,14 @@ for f in "$TARGET"/etc/init.d/*; do
     grep -qx "$name" "$KEEP" || rm -rf "$f"
 done
 # OpenSSH 9.8+ penalises a source address after a session it counts as failed (PerSourcePenalties).
-# On this build the pre-authentication child ends with status 255 even after a good login, so
-# the next connections from the same address hang (and behind a router every client shares one
-# address). Turn the penalties off; failed logins are still limited by MaxAuthTries.
+# On this build the pre-authentication child ends with status 255 even after a good login, which
+# counts as a "crash", so the next connections from the same address hang (and behind a router
+# every client shares one address). Only the crash penalty is set to 0 (a 0 s penalty never
+# exceeds min:15, so it never blocks); the others (authfail, noauth, ...) keep their defaults.
+# In 9.9p2 a LoginGraceTime overrun uses the crash value too; LoginGraceTime still cuts it off.
 CFG="$TARGET/etc/ssh/sshd_config"
 if [ -f "$CFG" ] && ! grep -q "^PerSourcePenalties" "$CFG"; then
-    printf '\n# akkijp fork: see os/README.md (SSH)\nPerSourcePenalties no\n' >> "$CFG"
+    printf '\n# akkijp fork: see os/README.md (SSH)\nPerSourcePenalties crash:0\n' >> "$CFG"
 fi
 
 for name in $(cat "$KEEP"); do
