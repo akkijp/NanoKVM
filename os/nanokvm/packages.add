@@ -1,3 +1,10 @@
 # Buildroot options added for the NanoKVM image (the official image 1.4.3 has them).
 BR2_PACKAGE_SER2NET=y
 BR2_PACKAGE_OPENIPMI=y
+# openssh: Sipeed's defconfig had it only because mosh selected it (savedefconfig then leaves it
+# out). mosh is gone in 2025.02, so it must be named here, or the image has no sshd at all.
+BR2_PACKAGE_OPENSSH=y
+BR2_PACKAGE_OPENSSH_CLIENT=y
+BR2_PACKAGE_OPENSSH_SERVER=y
+BR2_PACKAGE_OPENSSH_KEY_UTILS=y
+BR2_PACKAGE_OPENSSH_SANDBOX=y
