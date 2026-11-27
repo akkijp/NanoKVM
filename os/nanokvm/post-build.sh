@@ -9,6 +9,15 @@ for f in "$TARGET"/etc/init.d/*; do
     name="$(basename "$f")"
     grep -qx "$name" "$KEEP" || rm -rf "$f"
 done
+# OpenSSH 9.8+ penalises a source address after a session it counts as failed (PerSourcePenalties).
+# On this build the pre-authentication child ends with status 255 even after a good login, so
+# the next connections from the same address hang (and behind a router every client shares one
+# address). Turn the penalties off; failed logins are still limited by MaxAuthTries.
+CFG="$TARGET/etc/ssh/sshd_config"
+if [ -f "$CFG" ] && ! grep -q "^PerSourcePenalties" "$CFG"; then
+    printf '\n# akkijp fork: see os/README.md (SSH)\nPerSourcePenalties no\n' >> "$CFG"
+fi
+
 for name in $(cat "$KEEP"); do
     [ -e "$TARGET/etc/init.d/$name" ] || echo "post-build: note: /etc/init.d/$name is not in this image" >&2
 done

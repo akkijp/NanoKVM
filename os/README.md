@@ -86,6 +86,13 @@ Buildroot 自身の都合で外れるもの（NanoKVM のアプリは使わな�
 
 2024.02 はもう修正が出ないので、openssh・expat・vim・rsync などが残る。使うのは 2025.02 版。見張りは 3 つとも追う（`rebuild2024`）。
 
+### 機器で確かめて直したこと（2026-11-27）
+
+- **SSH が 1 回目のあと受け付けなくなる**: 2025.02 の OpenSSH 9.9p2 には、失敗とみなした接続の送り元をしばらく受け付けない仕組み（PerSourcePenalties、9.8 から既定で有効）がある。この機器では、認証まで成功した接続でも、認証前の処理（seccomp のサンドボックスの中の子）が終了コード 255 で終わり、「異常終了」として送り元に罰が付く（`sshd -d` の記録に `mm_reap: preauth child exited with status 255`）。ルーター越しの接続は送り元が 1 つ（例: 192.168.101.1）に見えるので、2 回目からはそのアドレスの接続を受け取らずに置き去りにし（`CLOSE_WAIT` のまま）、つなぎ直すたびに罰が延びる。公式 1.4.3 の OpenSSH 9.6 にはこの仕組みが無い。直し: post-build で `sshd_config` に `PerSourcePenalties no` を足す（認証の失敗は MaxAuthTries で抑える）
+- **ホスト名が `kvm-`・MAC アドレスが欠ける**: SDK a4d8622 の `S10uuid` が、誰も作らない `/device_key_legacy` を読む。公式 1.4.3 の `S10uuid`（チップ固有の `/sys/class/cvi-base/base_uid` から作る）に差し替えた（`os/nanokvm/S10uuid`）。MAC は `48:da:35:6f:` ＋ base_uid の SHA-512 の 4 桁で、台ごとに違う
+- **sshd が無い**: Sipeed の defconfig では openssh を mosh が select していたため、最小の defconfig から落ちた。`packages.add` に明示した
+- 機器ごとの写し: `os/nanokvm/personalize.sh`（今のカードの p3 の位置・`/etc/kvm`・起動区画の固有ファイルを引き継ぐ）
+
 ## microSD に書く・戻す
 
 書く前に、いまの microSD をまるごと写す（これがいちばん確かな戻し方）。
